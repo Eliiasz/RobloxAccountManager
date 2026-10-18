@@ -35,6 +35,8 @@ hiddenimports = [
     "msvcrt",
     "psutil",
     "websockets",
+    "socks",
+    "urllib3.contrib.socks",
 ]
 
 selenium_data, selenium_binaries, selenium_imports = collect_all("selenium")

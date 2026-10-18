@@ -32,6 +32,11 @@ PATHS: dict[str, str] = {
     "enter": '<path d="M5 12h12M13 6l6 6-6 6"/>',
     "resize": '<path d="M8 20L20 8M14 20l6-6M20 20h.01"/>',
     "search": '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M16 16l5 5"/>',
+    "ban": '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>',
+    "globe": (
+        '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/>'
+        '<path d="M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9s1.3-6.4 3.8-9z"/>'
+    ),
 }
 
 _cache: dict[tuple, QPixmap] = {}

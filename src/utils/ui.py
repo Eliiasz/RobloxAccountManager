@@ -77,6 +77,8 @@ import features.game_selector as game_selector_mod
 import features.headless_manager as headless_manager_mod
 import features.presence as presence_mod
 import features.private_servers as private_servers_mod
+import features.proxy_manager as proxy_mod
+import features.account_health as health_mod
 import features.roblox_downloader as roblox_downloader_mod
 import features.roblox_settings as roblox_settings_mod
 import features.updater as updater_mod
@@ -379,6 +381,9 @@ class _Bridge(QObject):
     roblox_settings_auto_applied = Signal(object) # OperationResult from Roblox settings Auto Apply
     roblox_settings_path_changed = Signal(object)
     console_wakeup = Signal()
+    proxy_test_done = Signal(bool, str) # (success, message) from proxy test worker
+    ban_check_result = Signal(object, int, int) # (HealthResult, index, total) from ban check worker
+    ban_check_done = Signal(object) # summary dict from ban check worker
 
 
 SKIPPED_UPDATE_SETTING = "skipped_update_version"
@@ -1417,6 +1422,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             4: "Settings",
             5: "Console",
             6: "Donations",
+            8: "Proxy",
+            9: "Ban Check",
         }
         self._window_grid_hotkey_registered = False
         self._window_grid_hotkey_hwnd = 0
@@ -1446,6 +1453,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         # Thread to Qt signal bridge
         self._bridge = _Bridge()
         self._bridge.account_added.connect(self._on_add_done_main)
+        self._bridge.proxy_test_done.connect(self._on_proxy_test_done)
+        self._bridge.ban_check_result.connect(self._on_ban_check_result)
+        self._bridge.ban_check_done.connect(self._on_ban_check_done)
         self._bridge.account_creator_done.connect(self._on_account_creator_done)
         self._bridge.launch_done.connect(self._on_launch_and_refresh)
         self._bridge.avatar_ready.connect(self._on_avatar_ready)
@@ -1889,14 +1899,16 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         outer.addWidget(self._build_title_bar())
 
         self._page_stack = QStackedWidget()
-        self._built_pages = {0, 1, 2, 3, 7}
+        self._built_pages = {0, 1, 2, 3, 7, 8, 9}
         self._lazy_page_builders = {
             4: self._build_settings_panel,
             5: self._build_console_panel,
             6: self._build_donations_panel,
         }
 
-        for index, page_name in self._page_names.items():
+        # Stack index must equal page index; the Setup panel sits at 7, so
+        # pages after it are added once Setup is in place.
+        def _add_page_host(index: int, page_name: str) -> None:
             host = _DetachablePageHost(index, page_name)
             host.show_button.clicked.connect(
                 lambda _=False, idx=index: self._show_detached_page(idx)
@@ -1906,6 +1918,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
             self._page_hosts[index] = host
             self._page_stack.addWidget(host)
+
+        for index, page_name in self._page_names.items():
+            if index < 7:
+                _add_page_host(index, page_name)
 
         _accounts_page = QWidget()
         _acc_lay = QHBoxLayout(_accounts_page)
@@ -1919,6 +1935,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._page_hosts[2].set_page(self._build_anti_afk_panel())
         self._page_hosts[3].set_page(self._build_multi_roblox_panel())
         self._page_stack.addWidget(self._build_setup_panel()) # idx 7
+        for index, page_name in self._page_names.items():
+            if index > 7:
+                _add_page_host(index, page_name)
+        self._page_hosts[8].set_page(self._build_proxy_panel())
+        self._page_hosts[9].set_page(self._build_ban_check_panel())
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -2188,13 +2209,15 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Settings":    4,
             "Console":     5,
             "Donations":   6,
+            "Proxy":       8,
+            "Ban Check":   9,
         }
 
         self._normal_nav_btns: list[QPushButton] = []
         _nav_icons = {
             "Accounts": "accounts", "Auto-Rejoin": "refresh", "Anti AFK": "clock",
-            "Multi Roblox": "windows", "Settings": "sliders", "Console": "terminal",
-            "Donations": "heart",
+            "Multi Roblox": "windows", "Proxy": "globe", "Settings": "sliders", "Console": "terminal",
+            "Donations": "heart", "Ban Check": "ban",
         }
 
         for label, checked in [
@@ -2205,6 +2228,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             ("Settings", False),
             ("Console", False),
             ("Donations", False),
+            ("Proxy", False),
+            ("Ban Check", False),
         ]:
             btn = QPushButton(label)
             btn.setObjectName("navTab")
@@ -3056,6 +3081,559 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         actions.save_ui_setting("anti_afk_tooltip_enabled", self._afk_tooltip_enabled)
         actions.save_ui_setting("anti_afk_tooltip_size", self._afk_tooltip_size)
         actions.save_ui_setting("anti_afk_enabled", self._afk_enabled)
+
+    # Ban Check -------------------------------------------------------------
+    def _build_ban_check_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("centerPanel")
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(0, 0, 0, 0)
+        ttl = QLabel("Banned / Locked Accounts")
+        ttl.setObjectName("sectionTitle")
+        hdr.addWidget(ttl)
+        hdr.addStretch(1)
+        self._ban_status_lbl = QLabel("Not scanned yet")
+        self._ban_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        hdr.addWidget(self._ban_status_lbl)
+        lay.addLayout(hdr)
+
+        desc = QLabel(
+            "Scans every saved account and lists the ones that are banned, terminated, or whose login "
+            "no longer works (locked / signed out). Tick the ones you want gone and delete them. "
+            "Accounts marked Unknown could not be checked and are never ticked automatically."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        lay.addWidget(desc)
+
+        btn_style = (
+            f"QPushButton {{ background: {INPUT}; border: 1px solid {LINE};"
+            f" color: {TEXT}; padding: 4px 12px; border-radius: 0; }}"
+            f"QPushButton:hover {{ background: {SELECT}; }}"
+            f"QPushButton:disabled {{ color: {MUTED}; }}"
+        )
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+        self._ban_scan_btn = QPushButton("Scan All Accounts")
+        self._ban_scan_btn.clicked.connect(self._on_ban_scan)
+        self._ban_stop_btn = QPushButton("Stop")
+        self._ban_stop_btn.setEnabled(False)
+        self._ban_stop_btn.clicked.connect(self._on_ban_stop)
+        for b in (self._ban_scan_btn, self._ban_stop_btn):
+            b.setFixedHeight(26)
+            b.setStyleSheet(btn_style)
+            top_row.addWidget(b)
+        top_row.addSpacing(8)
+        self._ban_show_ok_chk = QCheckBox("Show OK accounts")
+        self._ban_show_ok_chk.setStyleSheet(f"QCheckBox {{ color: {MUTED}; font-size: 11px; }}")
+        self._ban_show_ok_chk.toggled.connect(self._apply_ban_filter)
+        top_row.addWidget(self._ban_show_ok_chk)
+        top_row.addStretch(1)
+        lay.addLayout(top_row)
+
+        self._ban_tree = QTreeWidget()
+        self._ban_tree.setColumnCount(3)
+        self._ban_tree.setHeaderLabels(["Account", "Status", "Details"])
+        self._ban_tree.setRootIsDecorated(False)
+        self._ban_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._ban_tree.header().setStretchLastSection(True)
+        self._ban_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._ban_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._ban_tree.itemChanged.connect(lambda *_: self._update_ban_delete_buttons())
+        lay.addWidget(self._ban_tree, 1)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(6)
+        self._ban_tick_all_btn = QPushButton("Tick All Problems")
+        self._ban_tick_all_btn.clicked.connect(lambda: self._set_ban_ticks(True))
+        self._ban_untick_btn = QPushButton("Untick All")
+        self._ban_untick_btn.clicked.connect(lambda: self._set_ban_ticks(False))
+        self._ban_delete_btn = QPushButton("Delete Ticked (0)")
+        self._ban_delete_btn.setEnabled(False)
+        self._ban_delete_btn.clicked.connect(self._on_ban_delete)
+        for b in (self._ban_tick_all_btn, self._ban_untick_btn):
+            b.setFixedHeight(26)
+            b.setStyleSheet(btn_style)
+            bottom_row.addWidget(b)
+        bottom_row.addStretch(1)
+        self._ban_delete_btn.setFixedHeight(26)
+        self._ban_delete_btn.setStyleSheet(
+            "QPushButton { background: #5a1f1f; border: 1px solid #7a2a2a;"
+            " color: #ffffff; padding: 4px 12px; border-radius: 0; font-weight: 700; }"
+            "QPushButton:hover { background: #742828; }"
+            f"QPushButton:disabled {{ background: {INPUT}; border: 1px solid {LINE}; color: {MUTED}; }}"
+        )
+        bottom_row.addWidget(self._ban_delete_btn)
+        lay.addLayout(bottom_row)
+
+        self._ban_checker = None
+        self._ban_items: dict[str, QTreeWidgetItem] = {}
+        return panel
+
+    _BAN_COLORS = {
+        health_mod.BANNED: "#e06c6c",
+        health_mod.TERMINATED: "#e06c6c",
+        health_mod.LOCKED: "#e0a85c",
+        health_mod.UNKNOWN: "#9a9a9a",
+        health_mod.OK: "#6cc08a",
+    }
+
+    def _on_ban_scan(self) -> None:
+        if self._ban_checker is not None and self._ban_checker.running:
+            return
+        if not self.manager.accounts:
+            self._ban_status_lbl.setText("No accounts saved")
+            return
+        self._ban_tree.clear()
+        self._ban_items.clear()
+        self._ban_scan_btn.setEnabled(False)
+        self._ban_stop_btn.setEnabled(True)
+        self._ban_delete_btn.setEnabled(False)
+        self._ban_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        self._ban_status_lbl.setText("Scanning...")
+        settings = actions.load_ui_settings()
+        delay = cookie_validator_mod.get_validation_delay(settings)
+        self._ban_checker = health_mod.AccountHealthChecker(
+            self.manager,
+            on_result=lambda r, i, t: self._bridge.ban_check_result.emit(r, i, t),
+            on_done=lambda summary: self._bridge.ban_check_done.emit(summary),
+            delay_sec=delay,
+        )
+        self._ban_checker.start()
+
+    def _on_ban_stop(self) -> None:
+        if self._ban_checker is not None:
+            self._ban_checker.stop()
+        self._ban_stop_btn.setEnabled(False)
+        self._ban_status_lbl.setText("Stopping...")
+
+    def _on_ban_check_result(self, result, index: int, total: int) -> None:
+        if not isValid(self._ban_tree):
+            return
+        item = QTreeWidgetItem([result.username, result.label, result.detail])
+        item.setData(0, Qt.ItemDataRole.UserRole, result.status)
+        problem = result.status in health_mod.PROBLEM_STATUSES
+        if problem or result.status == health_mod.UNKNOWN:
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked if problem else Qt.CheckState.Unchecked)
+        item.setForeground(1, QColor(self._BAN_COLORS.get(result.status, TEXT)))
+        item.setToolTip(2, result.detail)
+        self._ban_tree.blockSignals(True)
+        self._ban_tree.addTopLevelItem(item)
+        self._ban_tree.blockSignals(False)
+        self._ban_items[result.username] = item
+        item.setHidden(result.status == health_mod.OK and not self._ban_show_ok_chk.isChecked())
+        self._ban_status_lbl.setText(f"Scanning {index}/{total}...")
+        self._update_ban_delete_buttons()
+
+    def _on_ban_check_done(self, summary: dict) -> None:
+        if not isValid(self._ban_status_lbl):
+            return
+        self._ban_scan_btn.setEnabled(True)
+        self._ban_stop_btn.setEnabled(False)
+        counts = summary.get("counts", {})
+        problems = sum(counts.get(s, 0) for s in health_mod.PROBLEM_STATUSES)
+        parts = [f"{health_mod.LABELS[k]}: {v}" for k, v in counts.items() if v]
+        text = f"{problems} problem account{'s' if problems != 1 else ''}  ·  " + ", ".join(parts)
+        if summary.get("stopped"):
+            text = summary["stopped"] + "  " + text
+        self._ban_status_lbl.setText(text)
+        color = "#e06c6c" if problems else MUTED
+        self._ban_status_lbl.setStyleSheet(f"color: {color}; font-size: 11px;")
+        self._update_ban_delete_buttons()
+
+    def _apply_ban_filter(self, *_args) -> None:
+        show_ok = self._ban_show_ok_chk.isChecked()
+        for item in self._ban_items.values():
+            status = item.data(0, Qt.ItemDataRole.UserRole)
+            item.setHidden(status == health_mod.OK and not show_ok)
+
+    def _set_ban_ticks(self, tick: bool) -> None:
+        self._ban_tree.blockSignals(True)
+        for item in self._ban_items.values():
+            if not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                continue
+            status = item.data(0, Qt.ItemDataRole.UserRole)
+            if tick:
+                if status in health_mod.PROBLEM_STATUSES:
+                    item.setCheckState(0, Qt.CheckState.Checked)
+            else:
+                item.setCheckState(0, Qt.CheckState.Unchecked)
+        self._ban_tree.blockSignals(False)
+        self._update_ban_delete_buttons()
+
+    def _ticked_ban_usernames(self) -> list[str]:
+        return [
+            name for name, item in self._ban_items.items()
+            if (item.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+            and item.checkState(0) == Qt.CheckState.Checked
+        ]
+
+    def _update_ban_delete_buttons(self) -> None:
+        if not isValid(self._ban_delete_btn):
+            return
+        count = len(self._ticked_ban_usernames())
+        running = self._ban_checker is not None and self._ban_checker.running
+        self._ban_delete_btn.setText(f"Delete Ticked ({count})")
+        self._ban_delete_btn.setEnabled(count > 0 and not running)
+
+    def _on_ban_delete(self) -> None:
+        usernames = self._ticked_ban_usernames()
+        if not usernames:
+            return
+        preview = "\n".join(
+            f"  • {u}  ({self._ban_items[u].text(1)})" for u in usernames[:15]
+        )
+        if len(usernames) > 15:
+            preview += f"\n  ... and {len(usernames) - 15} more"
+        reply = QMessageBox.question(
+            self, "Delete Accounts",
+            f"Remove {len(usernames)} account{'s' if len(usernames) != 1 else ''} from the manager?\n\n"
+            f"{preview}\n\nThis only removes them from this app, not from Roblox. It cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        removed, failed = 0, []
+        for username in usernames:
+            ok, msg = actions.remove_account(self.manager, username)
+            if ok:
+                removed += 1
+                item = self._ban_items.pop(username, None)
+                if item is not None:
+                    idx = self._ban_tree.indexOfTopLevelItem(item)
+                    if idx >= 0:
+                        self._ban_tree.takeTopLevelItem(idx)
+            else:
+                failed.append(f"{username}: {msg}")
+        self._refresh_account_list()
+        self._update_ban_delete_buttons()
+        self._ban_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        self._ban_status_lbl.setText(f"Removed {removed} account{'s' if removed != 1 else ''}")
+        print(f"[INFO] Ban check: removed {removed} account(s)")
+        if failed:
+            _show_error(self, "Some accounts were not removed", "\n".join(failed[:20]))
+
+    # Proxy ---------------------------------------------------------------
+    def _build_proxy_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("centerPanel")
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(0, 0, 0, 0)
+        ttl = QLabel("Proxy")
+        ttl.setObjectName("sectionTitle")
+        hdr.addWidget(ttl)
+        hdr.addStretch(1)
+        self._proxy_status_lbl = QLabel("Status: Off")
+        self._proxy_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        hdr.addWidget(self._proxy_status_lbl)
+        lay.addLayout(hdr)
+
+        desc = QLabel(
+            "Routes the manager's Roblox web requests (login, launching, cookie checks, "
+            "server lists) through a proxy. The game client's own in-game connection is not proxied."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        lay.addWidget(desc)
+
+        self._proxy_enabled_chk = QCheckBox("Enable Proxy")
+        self._proxy_enabled_chk.setStyleSheet(
+            f"QCheckBox {{ color: {TEXT}; font-size: 12px; font-weight: 700; }}"
+        )
+        self._proxy_enabled_chk.toggled.connect(self._on_proxy_enabled_toggled)
+        lay.addWidget(self._proxy_enabled_chk)
+
+        label_style = f"color: {MUTED}; font-size: 11px; min-width: 90px;"
+
+        # Mode
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(12)
+        mode_lbl = QLabel("Mode:")
+        mode_lbl.setStyleSheet(label_style)
+        mode_row.addWidget(mode_lbl)
+        self._proxy_mode_gateway = QRadioButton("Rotating gateway")
+        self._proxy_mode_gateway.setToolTip(
+            "One address from your provider. The provider changes the IP "
+            "(per request, or every few minutes with a sticky session)."
+        )
+        self._proxy_mode_list = QRadioButton("Proxy list (app rotates)")
+        self._proxy_mode_list.setToolTip("Several proxies. The app switches to the next one on a timer.")
+        self._proxy_mode_group = QButtonGroup(panel)
+        self._proxy_mode_group.addButton(self._proxy_mode_gateway)
+        self._proxy_mode_group.addButton(self._proxy_mode_list)
+        self._proxy_mode_gateway.toggled.connect(self._update_proxy_mode_visibility)
+        mode_row.addWidget(self._proxy_mode_gateway)
+        mode_row.addWidget(self._proxy_mode_list)
+        mode_row.addStretch(1)
+        lay.addLayout(mode_row)
+
+        # Default type
+        type_row = QHBoxLayout()
+        type_row.setSpacing(8)
+        type_lbl = QLabel("Default type:")
+        type_lbl.setStyleSheet(label_style)
+        type_row.addWidget(type_lbl)
+        self._proxy_scheme_combo = QComboBox()
+        self._proxy_scheme_combo.addItem("SOCKS5 (remote DNS)", "socks5h")
+        self._proxy_scheme_combo.addItem("SOCKS5 (local DNS)", "socks5")
+        self._proxy_scheme_combo.addItem("HTTP", "http")
+        self._proxy_scheme_combo.setToolTip("Used for entries written without socks5:// or http://")
+        self._proxy_scheme_combo.setFixedWidth(170)
+        type_row.addWidget(self._proxy_scheme_combo)
+        type_row.addStretch(1)
+        lay.addLayout(type_row)
+
+        # Gateway
+        self._proxy_gateway_box = QWidget()
+        gw_lay = QHBoxLayout(self._proxy_gateway_box)
+        gw_lay.setContentsMargins(0, 0, 0, 0)
+        gw_lay.setSpacing(8)
+        gw_lbl = QLabel("Proxy:")
+        gw_lbl.setStyleSheet(label_style)
+        gw_lay.addWidget(gw_lbl)
+        self._proxy_gateway_edit = QLineEdit()
+        self._proxy_gateway_edit.setPlaceholderText("host:port:user:pass  or  socks5://user:pass@host:port")
+        self._proxy_gateway_edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
+        gw_lay.addWidget(self._proxy_gateway_edit, 1)
+        lay.addWidget(self._proxy_gateway_box)
+
+        self._proxy_gateway_hint = QLabel(
+            "Tip: to keep one IP for a few minutes, use your provider's sticky-session username "
+            "(for example user-session-abc123-sesstime-5). Check your provider's docs for the exact format."
+        )
+        self._proxy_gateway_hint.setWordWrap(True)
+        self._proxy_gateway_hint.setStyleSheet(f"color: {NOTE}; font-size: 10px;")
+        lay.addWidget(self._proxy_gateway_hint)
+
+        # List
+        self._proxy_list_box = QWidget()
+        list_lay = QVBoxLayout(self._proxy_list_box)
+        list_lay.setContentsMargins(0, 0, 0, 0)
+        list_lay.setSpacing(8)
+        list_lbl = QLabel("Proxies (one per line):")
+        list_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        list_lay.addWidget(list_lbl)
+        self._proxy_list_edit = QTextEdit()
+        self._proxy_list_edit.setAcceptRichText(False)
+        self._proxy_list_edit.setPlaceholderText(
+            "1.2.3.4:1080:user:pass\nsocks5://user:pass@5.6.7.8:1080\nhttp://9.9.9.9:8080"
+        )
+        self._proxy_list_edit.setMinimumHeight(110)
+        list_lay.addWidget(self._proxy_list_edit, 1)
+
+        rot_row = QHBoxLayout()
+        rot_row.setSpacing(8)
+        rot_lbl = QLabel("Rotate every (min):")
+        rot_lbl.setStyleSheet(label_style)
+        rot_row.addWidget(rot_lbl)
+        self._proxy_rotate_spin = QSpinBox()
+        self._proxy_rotate_spin.setRange(1, 1440)
+        self._proxy_rotate_spin.setValue(5)
+        self._proxy_rotate_spin.setFixedWidth(60)
+        self._proxy_rotate_spin.setStyleSheet(
+            f"QSpinBox {{ background: {INPUT}; border: 1px solid {LINE};"
+            f" color: {TEXT}; padding: 4px; border-radius: 3px; }}"
+            "QSpinBox::up-button, QSpinBox::down-button { width: 0; height: 0; border: 0; }"
+        )
+        rot_row.addWidget(self._proxy_rotate_spin)
+        self._proxy_random_chk = QCheckBox("Random order")
+        self._proxy_random_chk.setStyleSheet(f"QCheckBox {{ color: {MUTED}; font-size: 11px; }}")
+        rot_row.addWidget(self._proxy_random_chk)
+        rot_row.addStretch(1)
+        list_lay.addLayout(rot_row)
+        lay.addWidget(self._proxy_list_box, 1)
+
+        # Buttons
+        btn_style = (
+            f"QPushButton {{ background: {INPUT}; border: 1px solid {LINE};"
+            f" color: {TEXT}; padding: 4px 12px; border-radius: 0; }}"
+            f"QPushButton:hover {{ background: {SELECT}; }}"
+            f"QPushButton:disabled {{ color: {MUTED}; }}"
+        )
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        self._proxy_save_btn = QPushButton("Save && Apply")
+        self._proxy_save_btn.clicked.connect(self._on_proxy_save)
+        self._proxy_rotate_btn = QPushButton("Rotate Now")
+        self._proxy_rotate_btn.clicked.connect(self._on_proxy_rotate_now)
+        self._proxy_test_btn = QPushButton("Test / Check IP")
+        self._proxy_test_btn.setToolTip("Shows the public IP Roblox will see for the manager's requests")
+        self._proxy_test_btn.clicked.connect(self._on_proxy_test)
+        for btn in (self._proxy_save_btn, self._proxy_rotate_btn, self._proxy_test_btn):
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(btn_style)
+            btn_row.addWidget(btn)
+        btn_row.addStretch(1)
+        lay.addLayout(btn_row)
+
+        self._proxy_result_lbl = QLabel("")
+        self._proxy_result_lbl.setWordWrap(True)
+        self._proxy_result_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._proxy_result_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        lay.addWidget(self._proxy_result_lbl)
+
+        self._load_proxy_settings()
+
+        self._proxy_status_timer = QTimer(self)
+        self._proxy_status_timer.setInterval(1000)
+        self._proxy_status_timer.timeout.connect(self._refresh_proxy_status)
+        self._proxy_status_timer.start()
+        self._refresh_proxy_status()
+        return panel
+
+    def _load_proxy_settings(self) -> None:
+        cfg = proxy_mod.load_config()
+        widgets = (
+            self._proxy_enabled_chk, self._proxy_mode_gateway, self._proxy_mode_list,
+            self._proxy_scheme_combo, self._proxy_rotate_spin, self._proxy_random_chk,
+        )
+        for w in widgets:
+            w.blockSignals(True)
+        self._proxy_enabled_chk.setChecked(bool(cfg["enabled"]))
+        if cfg["mode"] == proxy_mod.MODE_LIST:
+            self._proxy_mode_list.setChecked(True)
+        else:
+            self._proxy_mode_gateway.setChecked(True)
+        idx = self._proxy_scheme_combo.findData(cfg["default_scheme"])
+        self._proxy_scheme_combo.setCurrentIndex(max(0, idx))
+        self._proxy_gateway_edit.setText(cfg["gateway"])
+        self._proxy_list_edit.setPlainText("\n".join(cfg["proxies"]))
+        self._proxy_rotate_spin.setValue(int(cfg["rotate_minutes"]))
+        self._proxy_random_chk.setChecked(bool(cfg["randomize"]))
+        for w in widgets:
+            w.blockSignals(False)
+        self._update_proxy_mode_visibility()
+
+    def _collect_proxy_config(self) -> dict:
+        lines = [
+            line.strip()
+            for line in self._proxy_list_edit.toPlainText().splitlines()
+            if line.strip()
+        ]
+        return {
+            "enabled": self._proxy_enabled_chk.isChecked(),
+            "mode": proxy_mod.MODE_LIST if self._proxy_mode_list.isChecked() else proxy_mod.MODE_GATEWAY,
+            "default_scheme": self._proxy_scheme_combo.currentData() or "socks5h",
+            "gateway": self._proxy_gateway_edit.text().strip(),
+            "proxies": lines,
+            "rotate_minutes": self._proxy_rotate_spin.value(),
+            "randomize": self._proxy_random_chk.isChecked(),
+        }
+
+    def _update_proxy_mode_visibility(self, *_args) -> None:
+        is_list = self._proxy_mode_list.isChecked()
+        self._proxy_gateway_box.setVisible(not is_list)
+        self._proxy_gateway_hint.setVisible(not is_list)
+        self._proxy_list_box.setVisible(is_list)
+        self._proxy_rotate_btn.setVisible(is_list)
+
+    def _apply_proxy_config(self, cfg: dict) -> None:
+        raw = cfg["proxies"] if cfg["mode"] == proxy_mod.MODE_LIST else [cfg["gateway"]]
+        raw = [line for line in raw if line and not line.startswith("#")]
+        valid = proxy_mod.resolved_proxies(cfg)
+        bad = len(raw) - len(valid)
+        error = ""
+
+        if cfg["enabled"] and not valid:
+            error = "No valid proxy entered. Proxy stays off."
+            cfg = dict(cfg, enabled=False)
+            self._proxy_enabled_chk.blockSignals(True)
+            self._proxy_enabled_chk.setChecked(False)
+            self._proxy_enabled_chk.blockSignals(False)
+        elif cfg["enabled"] and any(u.startswith("socks") for u in valid) and not proxy_mod.socks_available():
+            error = 'SOCKS support is missing. Run: pip install "requests[socks]" and restart.'
+
+        proxy_mod.save_config(cfg)
+        proxy_mod.manager.apply(cfg)
+        self._refresh_proxy_status()
+
+        if error:
+            self._proxy_result_lbl.setStyleSheet("color: #e06c6c; font-size: 11px;")
+            self._proxy_result_lbl.setText(error)
+            return
+        if cfg["enabled"]:
+            note = f"Saved. {len(valid)} {'proxy' if len(valid) == 1 else 'proxies'} loaded"
+            if bad:
+                note += f", {bad} unreadable line{'s' if bad != 1 else ''} skipped"
+            note += "."
+        else:
+            note = "Saved. Proxy is off."
+        self._proxy_result_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        self._proxy_result_lbl.setText(note)
+
+    def _on_proxy_save(self) -> None:
+        self._apply_proxy_config(self._collect_proxy_config())
+
+    def _on_proxy_enabled_toggled(self, _checked: bool) -> None:
+        self._apply_proxy_config(self._collect_proxy_config())
+
+    def _on_proxy_rotate_now(self) -> None:
+        new = proxy_mod.manager.rotate_now()
+        self._proxy_result_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        self._proxy_result_lbl.setText(f"Switched to {new}" if new else "Proxy is off.")
+        self._refresh_proxy_status()
+
+    def _on_proxy_test(self) -> None:
+        url = proxy_mod.manager.current
+        if not url:
+            # Not enabled yet: test the first entry in the form so it can be tried before saving.
+            entries = proxy_mod.resolved_proxies(self._collect_proxy_config())
+            url = entries[0] if entries else None
+        self._proxy_test_btn.setEnabled(False)
+        self._proxy_result_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        self._proxy_result_lbl.setText(
+            f"Testing {proxy_mod.mask(url)}..." if url else "No proxy set, checking your direct IP..."
+        )
+
+        def _worker(target=url):
+            ok, info, secs = proxy_mod.test_proxy(target)
+            label = proxy_mod.mask(target) if target else "Direct connection"
+            if ok:
+                msg = f"{label}  →  public IP {info}  ({secs * 1000:.0f} ms)"
+            else:
+                msg = f"{label}  →  failed: {info}"
+            self._bridge.proxy_test_done.emit(ok, msg)
+
+        threading.Thread(target=_worker, daemon=True, name="ProxyTest").start()
+
+    def _on_proxy_test_done(self, ok: bool, message: str) -> None:
+        if not isValid(self._proxy_test_btn):
+            return
+        self._proxy_test_btn.setEnabled(True)
+        color = MUTED if ok else "#e06c6c"
+        self._proxy_result_lbl.setStyleSheet(f"color: {color}; font-size: 11px;")
+        self._proxy_result_lbl.setText(message)
+
+    def _refresh_proxy_status(self) -> None:
+        if not isValid(self._proxy_status_lbl):
+            return
+        st = proxy_mod.manager.status()
+        if not st["enabled"]:
+            self._proxy_status_lbl.setText("Status: Off")
+            self._proxy_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+            self._proxy_rotate_btn.setEnabled(False)
+            return
+        text = f"Status: On  ·  {st['current']}"
+        if st["count"] > 1:
+            text += f"  ({st['position']}/{st['count']})"
+        nxt = st["next_rotation_seconds"]
+        if nxt is not None:
+            text += f"  ·  next in {nxt // 60}:{nxt % 60:02d}"
+        self._proxy_status_lbl.setText(text)
+        self._proxy_status_lbl.setStyleSheet(f"color: {ACCENT_BRIGHT}; font-size: 11px;")
+        self._proxy_rotate_btn.setEnabled(st["count"] > 1)
 
     def _build_multi_roblox_panel(self) -> QFrame: # Multi Roblox
         panel = QFrame()

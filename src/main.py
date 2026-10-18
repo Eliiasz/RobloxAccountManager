@@ -74,6 +74,12 @@ def main():
     diagnostics.set_startup_stage("console capture installed")
     _ensure_data_folder()
     diagnostics.set_startup_stage("data folder ready")
+    try:
+        from features.proxy_manager import manager as proxy_manager
+
+        proxy_manager.apply()
+    except Exception as exc:
+        print(f"[WARNING] Could not apply proxy settings: {exc}")
 
     icon_path = resolve_icon_path()
 

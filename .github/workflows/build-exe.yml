@@ -1,0 +1,53 @@
+name: Build EXE
+
+# Builds EvanovarRAM.exe on a Windows runner and attaches it to the run as a
+# downloadable artifact. Runs on every push to main, or manually from the
+# Actions tab ("Run workflow").
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install 3.15
+
+      - name: Sync dependencies
+        run: uv sync --locked --group build
+
+      - name: Set build version
+        shell: pwsh
+        run: |
+          $version = uv run --no-sync python -c "from scripts.build import read_app_version; print(read_app_version())"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read the application version." }
+          "RAM_RELEASE_TAG=v$version" >> $env:GITHUB_ENV
+
+      - name: Build with PyInstaller
+        run: uv run --no-sync python scripts/build.py
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v7
+        with:
+          name: EvanovarRAM-proxy
+          path: dist/EvanovarRAM.exe
+          if-no-files-found: error
+          retention-days: 30
