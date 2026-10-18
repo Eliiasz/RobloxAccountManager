@@ -817,6 +817,23 @@ def _set_writable(path: Path) -> None:
     os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
 
 
+def _write_backup(path: Path, backup_path: Path) -> None:
+    """Copy the settings file to its backup, even if an old backup is read-only.
+
+    The settings file is often read-only (the FPS lock does that). copy2 would
+    copy that flag onto the backup, and the next backup could then not
+    overwrite it. Clear and replace any old backup, and copy only the data so
+    the new backup is always writable.
+    """
+    if backup_path.exists():
+        try:
+            os.chmod(backup_path, stat.S_IREAD | stat.S_IWRITE)
+        except OSError:
+            pass
+        backup_path.unlink()
+    shutil.copyfile(path, backup_path)
+
+
 def _set_read_only(path: Path, read_only: bool) -> None:
     os.chmod(path, stat.S_IREAD if read_only else stat.S_IREAD | stat.S_IWRITE)
 
@@ -901,7 +918,7 @@ def _apply_settings(
             original_read_only = not bool(os.stat(path).st_mode & stat.S_IWRITE)
             if normalized_changes:
                 try:
-                    shutil.copy2(path, backup_path)
+                    _write_backup(path, backup_path)
                 except OSError as exc:
                     return OperationResult.failure(
                         "ROBLOX_SETTINGS_BACKUP_FAILED",
