@@ -159,8 +159,21 @@ class LaunchGateTests(unittest.TestCase):
         self.enterContext(patch.object(monitor, "_snapshot", return_value={}))
         self.confirm = self.enterContext(patch.object(monitor, "confirm_launch", return_value=OperationResult.success()))
 
-    def test_challenge_or_unverified_authentication_blocks_all_further_dispatches(self):
-        for code in ("ROBLOX_SECURITY_CHALLENGE", "ROBLOX_ACCOUNT_MISMATCH", "ROBLOX_LAUNCH_UNCONFIRMED"):
+    def test_one_account_problems_do_not_block_other_accounts(self):
+        for code in ("ROBLOX_SECURITY_CHALLENGE", "ROBLOX_LAUNCH_UNCONFIRMED"):
+            with self.subTest(code=code):
+                self.session.pop("launch_blocked", None)
+                self.manager._launch_roblox.reset_mock()
+                failure = OperationResult.failure(code, "Skipped", "This account only")
+                self.confirm.return_value = failure
+                self.assertIs(self.manager.launch_roblox("alice"), failure)
+                self.confirm.return_value = OperationResult.success()
+                self.assertTrue(self.manager.launch_roblox("bob"))
+                self.assertEqual(self.manager._launch_roblox.call_count, 2)
+                self.assertIsNone(self.session.get("launch_blocked"))
+
+    def test_wrong_account_evidence_blocks_all_further_dispatches(self):
+        for code in ("ROBLOX_ACCOUNT_MISMATCH", "LAUNCH_IDENTITY_AMBIGUOUS"):
             with self.subTest(code=code):
                 self.session.pop("launch_blocked", None)
                 self.manager._launch_roblox.reset_mock()

@@ -1609,6 +1609,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 lambda: self._apply_window_grid_hotkey(show_error=False),
             )
 
+        if S.get("kill_all_hotkey_enabled", False):
+            QTimer.singleShot(0, lambda: self._apply_kill_hotkey(show_error=False))
+
         if roblox_settings_mod.has_startup_customizations():
             QTimer.singleShot(0, self._start_roblox_auto_apply)
 
@@ -4969,6 +4972,43 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         window_grid_row.addWidget(self._sett_window_grid_key_btn)
         f.addLayout(window_grid_row)
 
+        f.addWidget(_sec("KILL ALL ROBLOX SHORTCUT"))
+        self._sett_kill_key_chk = _chk(
+            "kill_all_hotkey_enabled", "Enable Kill All Roblox Shortcut",
+            "Press this key anywhere (even while Roblox is focused) to instantly close every\n"
+            "Roblox window, same as the Kill All Roblox button.",
+            on_change=self._on_sett_kill_hotkey_enabled,
+        )
+        f.addWidget(self._sett_kill_key_chk)
+        kill_row = QHBoxLayout()
+        kill_lbl = QLabel("Shortcut")
+        kill_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        kill_row.addWidget(kill_lbl)
+        kill_row.addStretch(1)
+        self._sett_kill_key_btn = _HotkeyCaptureButton(
+            str(S.get("kill_all_hotkey", "Ctrl+Shift+K") or "Ctrl+Shift+K")
+        )
+        self._sett_kill_key_btn.setFixedWidth(150)
+        self._sett_kill_key_btn.setEnabled(bool(S.get("kill_all_hotkey_enabled", False)))
+        self._sett_kill_key_btn.setToolTip(
+            "Click, then press the key you want (e.g. Space, F8, Ctrl+K). Escape cancels."
+        )
+        self._sett_kill_key_btn.recording_started.connect(self._unregister_kill_hotkey)
+        self._sett_kill_key_btn.recording_canceled.connect(
+            lambda: self._apply_kill_hotkey(show_error=False)
+        )
+        self._sett_kill_key_btn.sequence_changed.connect(self._on_sett_kill_hotkey_changed)
+        kill_row.addWidget(self._sett_kill_key_btn)
+        f.addLayout(kill_row)
+        kill_note = QLabel(
+            "Tip: a single key like Space is taken over everywhere while this is on, "
+            "including jumping in Roblox. A key you don't use in-game (F8, Pause) or a "
+            "combo like Ctrl+Shift+K is safer."
+        )
+        kill_note.setWordWrap(True)
+        kill_note.setStyleSheet(f"color: {NOTE}; font-size: 10px;")
+        f.addWidget(kill_note)
+
         f.addWidget(_sec("FIXES"))
         self._sett_installer_fix_chk = _chk(
             "roblox_installer_fix", "Roblox Installer Fix",
@@ -5571,6 +5611,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         restore_window_grid = self._window_grid_hotkey_registered
         if restore_window_grid:
             self._unregister_window_grid_hotkey()
+        restore_kill = bool(getattr(self, "_kill_hotkey_hwnd", 0))
+        if restore_kill:
+            self._unregister_kill_hotkey()
         self.hide()
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
         self.show()
@@ -5592,6 +5635,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 0,
                 lambda: self._apply_window_grid_hotkey(show_error=False),
             )
+        if restore_kill:
+            QTimer.singleShot(0, lambda: self._apply_kill_hotkey(show_error=False))
         print(f"[INFO] Always on Top {'enabled' if enabled else 'disabled'}")
 
     def _on_sett_multi_select(self, enabled: bool):
@@ -6108,6 +6153,47 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         self._roblox_settings_auto_apply_chk.blockSignals(False)
         self._update_roblox_settings_apply_state()
+
+    def _unregister_kill_hotkey(self) -> None:
+        hwnd = getattr(self, "_kill_hotkey_hwnd", 0)
+        if hwnd:
+            window_grid_mod.unregister_hotkey(hwnd, window_grid_mod.KILL_ALL_HOTKEY_ID)
+        self._kill_hotkey_hwnd = 0
+
+    def _apply_kill_hotkey(self, show_error: bool = True) -> bool:
+        self._unregister_kill_hotkey()
+        settings = actions.load_ui_settings()
+        if not settings.get("kill_all_hotkey_enabled", False):
+            return False
+        sequence = str(settings.get("kill_all_hotkey", "Ctrl+Shift+K") or "Ctrl+Shift+K")
+        window_handle = int(self.winId())
+        result = window_grid_mod.register_hotkey(
+            window_handle, sequence, window_grid_mod.KILL_ALL_HOTKEY_ID
+        )
+        if result:
+            self._kill_hotkey_hwnd = window_handle
+            print(f"[INFO] Kill All Roblox shortcut: {sequence}")
+            return True
+        print(f"[WARNING] Kill All shortcut {sequence} could not be registered: {result.message}")
+        if show_error:
+            _show_error(
+                self, "Shortcut Not Available",
+                f"{sequence} could not be used as the Kill All shortcut.\n\n"
+                f"{result.message.replace('Window Grid', 'Kill All').replace(window_grid_mod.DEFAULT_HOTKEY, 'its previous value')}",
+            )
+        return False
+
+    def _on_sett_kill_hotkey_enabled(self, enabled: bool) -> None:
+        if hasattr(self, "_sett_kill_key_btn"):
+            self._sett_kill_key_btn.setEnabled(bool(enabled))
+        if enabled:
+            self._apply_kill_hotkey()
+        else:
+            self._unregister_kill_hotkey()
+
+    def _on_sett_kill_hotkey_changed(self, sequence: str) -> None:
+        actions.save_ui_setting("kill_all_hotkey", sequence)
+        self._apply_kill_hotkey()
 
     def _unregister_window_grid_hotkey(self) -> None:
         if self._window_grid_hotkey_registered:
@@ -7621,6 +7707,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._ar_refresh_list()
 
     def nativeEvent(self, event_type, message):
+        if window_grid_mod.is_hotkey_message(message, window_grid_mod.KILL_ALL_HOTKEY_ID):
+            self._on_kill_all_roblox()
+            return True, 0
         if window_grid_mod.is_hotkey_message(message):
             result = window_grid_mod.tile_roblox_windows()
             if not result:
@@ -7786,6 +7875,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         try:
             self._unregister_window_grid_hotkey()
+        except Exception:
+            pass
+        try:
+            self._unregister_kill_hotkey()
         except Exception:
             pass
         try:

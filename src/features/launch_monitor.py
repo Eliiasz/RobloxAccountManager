@@ -214,9 +214,9 @@ def confirm_launch(result, session, before, username):
             if challenged:
                 return OperationResult.failure(
                     "ROBLOX_SECURITY_CHALLENGE", "Roblox Verification Required",
-                    f"Roblox requested verification while launching {username}. "
-                    "Further launches are paused. Close the challenged client and verify "
-                    "the account on roblox.com before restarting Multi Roblox.",
+                    f"Roblox asked {username} to verify (\"not a bot\" check). "
+                    "This account was skipped; the other accounts keep launching. "
+                    "Close that window and verify the account on roblox.com later.",
                 )
             if user_id and expected_user and user_id != expected_user:
                 return OperationResult.failure(
@@ -248,8 +248,8 @@ def confirm_launch(result, session, before, username):
         if time.monotonic() >= deadline:
             return _failure(
                 "ROBLOX_LAUNCH_UNCONFIRMED",
-                f"The Roblox launch for {username} could not be verified within {_TIMEOUT:g} seconds. "
-                "Further launches are paused. Check open clients and the Console before restarting Multi Roblox.",
+                f"The Roblox launch for {username} could not be confirmed within {_TIMEOUT:g} seconds. "
+                "It was skipped; the other accounts keep launching.",
             )
         time.sleep(_POLL_SECONDS)
     return _failure("MULTI_ROBLOX_STOPPED", "Multi Roblox stopped while the client was starting.")

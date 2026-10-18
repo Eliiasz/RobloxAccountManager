@@ -1134,9 +1134,11 @@ class RobloxAccountManager:
         print(f"[ERROR] Account '{username}' not found")
         return False
     
+    # Only failures that mean a client may be signed in as the WRONG account
+    # pause every further launch. A verification challenge or a slow start is a
+    # problem with that one account, so the batch carries on with the others.
     _BLOCKING_CONFIRM_CODES = (
-        "ROBLOX_SECURITY_CHALLENGE", "ROBLOX_ACCOUNT_MISMATCH",
-        "ROBLOX_LAUNCH_UNCONFIRMED", "LAUNCH_IDENTITY_AMBIGUOUS",
+        "ROBLOX_ACCOUNT_MISMATCH", "LAUNCH_IDENTITY_AMBIGUOUS",
         "LAUNCH_EVIDENCE_MISSING", "LAUNCH_ACCOUNT_ID_MISSING",
     )
 
