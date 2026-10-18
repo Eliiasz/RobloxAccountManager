@@ -1,27 +1,67 @@
 name: Release
 
+# Publishes a GitHub Release (which the app's updater picks up) automatically
+# whenever the version in src/utils/version.py goes up on main and that
+# version has not been released yet. The full tests must pass first.
+# "Run workflow" re-runs it by hand for the current version.
+
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
+    paths:
+      - "src/utils/version.py"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag in vX.Y.Z format"
-        required: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Is this version already released?
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c "import re;print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', open('src/utils/version.py').read()).group(1))")
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "$tag is already released, nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will publish $tag."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  tests:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    uses: ./.github/workflows/tests.yml
+
   build-and-release:
+    needs: [check, tests]
+    if: needs.check.outputs.publish == 'true'
     runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.check.outputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -40,7 +80,7 @@ jobs:
       - name: Build with PyInstaller
         run: uv run --no-sync python scripts/build.py
         env:
-          RAM_RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RAM_RELEASE_TAG: ${{ env.RELEASE_TAG }}
 
       - name: Verify build output
         run: |
@@ -59,7 +99,7 @@ jobs:
         id: notes
         shell: bash
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          tag="$RELEASE_TAG"
           file="release-notes/$tag.md"
           if [ ! -f "$file" ]; then file="$RUNNER_TEMP/empty-notes.md"; : > "$file"; fi
           echo "path=$file" >> "$GITHUB_OUTPUT"
@@ -67,8 +107,9 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: ANAne's Roblox Account Manager ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: ANAne's Roblox Account Manager ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           body_path: ${{ steps.notes.outputs.path }}
