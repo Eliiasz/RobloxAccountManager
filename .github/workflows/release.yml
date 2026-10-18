@@ -44,22 +44,34 @@ jobs:
 
       - name: Verify build output
         run: |
-          if not exist "dist\EvanovarRAM.exe" (
+          if not exist "dist\ANaneRAM.exe" (
             echo Build output missing.
             exit /b 1
           )
-          dir /b "dist\EvanovarRAM-v*.exe" >nul 2>&1
+          dir /b "dist\ANaneRAM-v*.exe" >nul 2>&1
           if errorlevel 1 (
             echo Versioned release asset missing.
             exit /b 1
           )
         shell: cmd
 
+      - name: Release notes
+        id: notes
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          file="release-notes/$tag.md"
+          if [ ! -f "$file" ]; then file="$RUNNER_TEMP/empty-notes.md"; : > "$file"; fi
+          echo "path=$file" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: Evanovar RAM ${{ github.event.inputs.tag || github.ref_name }}
+          name: ANAne's Roblox Account Manager ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: dist/EvanovarRAM-v*.exe
+          body_path: ${{ steps.notes.outputs.path }}
+          files: |
+            dist/ANaneRAM-v*.exe
+            dist/EvanovarRAM-v*.exe

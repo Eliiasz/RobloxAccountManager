@@ -357,7 +357,7 @@ def report_exception(
     )
 
     details = [
-        "ANane RAM crash report",
+        "ANAne RAM crash report",
         f"Timestamp: {_timestamp()}",
         f"Application version: {_APP_VERSION}",
         f"Mode: {'compiled' if getattr(sys, 'frozen', False) else 'source'}",
@@ -420,7 +420,7 @@ def _handle_unhandled_exception(exception_type, exception, traceback_object) -> 
     )
     location = crash_path or _SESSION_LOG_PATH or "AccountManagerData"
     show_native_error(
-        "ANane RAM Crashed",
+        "ANAne RAM Crashed",
         "The application encountered an unexpected error.\n\n"
         f"Crash report:\n{location}",
     )

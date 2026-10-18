@@ -1261,7 +1261,7 @@ class _DetachedPageWindow(QMainWindow):
         self._allow_close = False
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        self.setWindowTitle(f"{page_name} - ANane RAM")
+        self.setWindowTitle(f"{page_name} - ANAne RAM")
         if not icon.isNull():
             self.setWindowIcon(icon)
         self.setStyleSheet(stylesheet)
@@ -1424,7 +1424,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             3: "Multi Roblox",
             4: "Settings",
             5: "Console",
-            6: "Donations",
+            6: "Contact Us",
             8: "Ban Check",
         }
         self._window_grid_hotkey_registered = False
@@ -1540,7 +1540,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
-        self.setWindowTitle("ANane's Roblox Account Manager")
+        self.setWindowTitle("ANAne's Roblox Account Manager")
         self._init_window_size()
         if self._icon_path:
             try:
@@ -2111,7 +2111,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 ico_lbl.setContentsMargins(0, 6, 8, 6)
                 lay.addWidget(ico_lbl)
 
-        title = QLabel("ANane's Roblox Account Manager")
+        title = QLabel("ANAne's Roblox Account Manager")
         title.setObjectName("titleText")
         lay.addWidget(title)
         lay.addStretch(1)
@@ -2215,14 +2215,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Settings":    4,
             "Console":     5,
             "Ban Check":   8,
-            "Donations":   6,
+            "Contact Us":  6,
         }
 
         self._normal_nav_btns: list[QPushButton] = []
         _nav_icons = {
             "Accounts": "accounts", "Auto-Rejoin": "refresh", "Anti AFK": "clock",
             "Multi Roblox": "windows", "Proxy": "globe", "Settings": "sliders", "Console": "terminal",
-            "Donations": "heart", "Ban Check": "ban",
+            "Contact Us": "chat", "Ban Check": "ban",
         }
 
         for label, checked in [
@@ -2233,7 +2233,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             ("Settings", False),
             ("Console", False),
             ("Ban Check", False),
-            ("Donations", False),
+            ("Contact Us", False),
         ]:
             btn = QPushButton(label)
             btn.setObjectName("navTab")
@@ -4571,7 +4571,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         self._sett_tray_chk = _chk(
             "hide_to_system_tray", "Hide to System Tray",
-            "Keep ANane RAM running in the system tray when the main window is closed.\n"
+            "Keep ANAne RAM running in the system tray when the main window is closed.\n"
             "Use the tray icon to show the window again or exit the application.",
             on_change=self._on_sett_tray,
         )
@@ -4773,7 +4773,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._sett_startup_chk = QCheckBox("Start with Windows")
         self._sett_startup_chk.setChecked(_startup_enabled)
         self._sett_startup_chk.setToolTip(
-            "Start ANane RAM automatically when you sign in to Windows.\n"
+            "Start ANAne RAM automatically when you sign in to Windows.\n"
             "This creates a shortcut in your Windows Startup folder."
         )
         self._sett_startup_chk.stateChanged.connect(self._on_sett_startup)
@@ -7817,7 +7817,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return OperationResult.failure(
                 "SYSTEM_TRAY_UNAVAILABLE",
                 "System Tray Unavailable",
-                "Windows did not provide a system tray for ANane RAM.",
+                "Windows did not provide a system tray for ANAne RAM.",
                 detail="QSystemTrayIcon.isSystemTrayAvailable() returned false.",
             )
 
@@ -7832,7 +7832,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 )
 
             tray_icon = QSystemTrayIcon(icon, self)
-            tray_icon.setToolTip("ANane's Roblox Account Manager")
+            tray_icon.setToolTip("ANAne's Roblox Account Manager")
             menu = QMenu(self)
             show_action = QAction("Show UI", self)
             exit_action = QAction("Exit", self)
@@ -9526,10 +9526,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if q:
             QTimer.singleShot(0, self._drain_console_queue)
 
-    _DONATION_URL = "https://www.roblox.com/games/718090786/donation#!/store"
-    _DONATION_USERNAME = "evedkdmdj"
+    # Contact details shown on the Contact Us page. Leave a value empty to show
+    # that channel as "Coming soon".
+    CONTACT_DISCORD_NAME = "hex0759"
+    CONTACT_DISCORD_URL = "https://discord.com/users/616978543318007808"
+    CONTACT_TELEGRAM_NAME = ""
+    CONTACT_TELEGRAM_URL = ""
 
-    def _build_donations_panel(self) -> QFrame:
+    def _build_donations_panel(self) -> QFrame:  # Contact Us page (kept name for page wiring)
         panel = QFrame()
         panel.setObjectName("settingsPanel")
 
@@ -9539,104 +9543,104 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         outer.addStretch(1)
 
         card = QFrame()
-        card.setObjectName("donationCard")
+        card.setObjectName("contactCard")
         card.setStyleSheet(f"""
-            #donationCard {{
+            #contactCard {{
                 background: {PANEL};
                 border: 1px solid {LINE};
                 border-radius: 10px;
             }}
         """)
         card.setMaximumWidth(420)
-        card.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Minimum,
-        )
+        card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
 
         card_lay = QVBoxLayout(card)
         card_lay.setContentsMargins(32, 32, 32, 32)
-        card_lay.setSpacing(18)
+        card_lay.setSpacing(14)
         card_lay.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-
-        title_lbl = QLabel("Support the Creator")
+        title_lbl = QLabel("Contact Us")
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        title_lbl.setStyleSheet(
-            f"font-size: 15px; font-weight: 700; color: {TEXT}; background: transparent;"
-        )
+        title_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {TEXT}; background: transparent;")
         card_lay.addWidget(title_lbl)
 
-        desc_lbl = QLabel("Support the creator by donating via Robux!")
+        desc_lbl = QLabel("Need help, have a question, or found a bug? Message us.")
         desc_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         desc_lbl.setWordWrap(True)
-        desc_lbl.setStyleSheet(
-            f"font-size: 11px; color: {MUTED}; background: transparent;"
-        )
+        desc_lbl.setStyleSheet(f"font-size: 11px; color: {MUTED}; background: transparent;")
         card_lay.addWidget(desc_lbl)
 
-        copy_btn = QPushButton("Copy Link")
-        copy_btn.setFixedHeight(34)
-        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_btn.setStyleSheet(f"""
+        primary_style = f"""
             QPushButton {{
-                background: {FG_ACCENT};
-                color: {ON_ACCENT};
-                border: none;
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: 600;
+                background: {FG_ACCENT}; color: {ON_ACCENT}; border: none;
+                border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px;
             }}
-            QPushButton:hover {{
-                background: {ACCENT_HOVER};
-            }}
-            QPushButton:pressed {{
-                background: {ACCENT_PRESSED};
-            }}
-        """)
-
-        def _copy_link():
-            QApplication.clipboard().setText(self._DONATION_URL)
-            copy_btn.setText("Copied!")
-            QTimer.singleShot(2000, lambda: copy_btn.setText("Copy Link"))
-
-        copy_btn.clicked.connect(_copy_link)
-        card_lay.addWidget(copy_btn)
-
-        plus_lbl = QLabel("Or donate robux via plus")
-        plus_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        plus_lbl.setWordWrap(True)
-        plus_lbl.setStyleSheet(
-            f"font-size: 11px; color: {MUTED}; background: transparent;"
-        )
-        card_lay.addWidget(plus_lbl)
-
-        copy_user_btn = QPushButton("Copy Username")
-        copy_user_btn.setFixedHeight(34)
-        copy_user_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_user_btn.setStyleSheet(f"""
+            QPushButton:hover {{ background: {ACCENT_HOVER}; }}
+            QPushButton:pressed {{ background: {ACCENT_PRESSED}; }}
+        """
+        disabled_style = f"""
             QPushButton {{
-                background: {FG_ACCENT};
-                color: {ON_ACCENT};
-                border: none;
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: 600;
+                background: {INPUT}; color: {MUTED}; border: 1px solid {LINE};
+                border-radius: 6px; font-size: 12px; font-weight: 600; padding: 0 12px;
             }}
-            QPushButton:hover {{
-                background: {ACCENT_HOVER};
-            }}
-            QPushButton:pressed {{
-                background: {ACCENT_PRESSED};
-            }}
-        """)
+        """
 
-        def _copy_username():
-            QApplication.clipboard().setText(self._DONATION_USERNAME)
-            copy_user_btn.setText("Copied!")
-            QTimer.singleShot(2000, lambda: copy_user_btn.setText("Copy Username"))
+        note_lbl = QLabel("")
+        note_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        note_lbl.setWordWrap(True)
+        note_lbl.setStyleSheet(f"font-size: 10px; color: {MUTED}; background: transparent;")
 
-        copy_user_btn.clicked.connect(_copy_username)
-        card_lay.addWidget(copy_user_btn)
+        def _channel(label: str, name: str, url: str) -> QPushButton:
+            # Only the channel name is shown. Click opens it; press and hold
+            # copies the username.
+            btn = QPushButton(label if (name or url) else f"{label}  ·  Coming soon")
+            btn.setFixedHeight(36)
+            if not (name or url):
+                btn.setEnabled(False)
+                btn.setStyleSheet(disabled_style)
+                return btn
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(primary_style)
+            btn.setToolTip("Click to open · Hold to copy")
+
+            hold = QTimer(btn)
+            hold.setSingleShot(True)
+            hold.setInterval(550)
+            state = {"held": False}
+
+            def _on_hold():
+                state["held"] = True
+                if name:
+                    QApplication.clipboard().setText(name)
+                    note_lbl.setText(f"Copied {name}. Contact us on Discord or Telegram.")
+                    btn.setText("Copied!")
+                    QTimer.singleShot(1500, lambda: isValid(btn) and btn.setText(label))
+
+            def _on_pressed():
+                state["held"] = False
+                hold.start()
+
+            def _on_clicked():
+                hold.stop()
+                if state["held"]:
+                    return  # it was a hold, already copied
+                if url:
+                    webbrowser.open(url)
+                    note_lbl.setText(f"Opening {label}…")
+
+            hold.timeout.connect(_on_hold)
+            btn.pressed.connect(_on_pressed)
+            btn.released.connect(hold.stop)
+            btn.clicked.connect(_on_clicked)
+            return btn
+
+        card_lay.addWidget(_channel("Discord", self.CONTACT_DISCORD_NAME, self.CONTACT_DISCORD_URL))
+        card_lay.addWidget(_channel("Telegram", self.CONTACT_TELEGRAM_NAME, self.CONTACT_TELEGRAM_URL))
+        hint_lbl = QLabel("Click to open · Hold to copy")
+        hint_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        hint_lbl.setStyleSheet(f"font-size: 10px; color: {MUTED}; background: transparent;")
+        card_lay.addWidget(hint_lbl)
+        card_lay.addWidget(note_lbl)
 
         h = QHBoxLayout()
         h.addStretch(1)
@@ -11211,7 +11215,7 @@ def main(icon_path: str | None = None, *, smoke_test: bool = False) -> int:
         )
         _show_error(
             None,
-            "ANane RAM Could Not Start",
+            "ANAne RAM Could Not Start",
             "The main window could not be created.\n\n"
             f"Details were saved to:\n{crash_path}",
         )

@@ -27,10 +27,11 @@ from utils.app_paths import get_data_dir
 GITHUB_API = "https://api.github.com/repos/Eliiasz/RobloxAccountManager/releases/latest"
 RELEASES_PAGE = "https://github.com/Eliiasz/RobloxAccountManager/releases/latest"
 RELEASE_ASSET_PATTERN = re.compile(
-    r"^EvanovarRAM-v\d+\.\d+\.\d+(?:\.\d+)?\.exe$",
+    r"^(?:ANaneRAM|EvanovarRAM)-v\d+\.\d+\.\d+(?:\.\d+)?\.exe$",
     re.IGNORECASE,
 )
 LEGACY_ASSET_NAMES = (
+    "ANaneRAM.exe",
     "EvanovarRAM.exe",
     "RobloxAccountManager.exe",
 )
@@ -97,11 +98,57 @@ def get_latest_release() -> OperationResult:
             "Update Check Failed",
             "GitHub returned a release without a version.",
         )
+    asset = _select_asset(release) or {}
     return OperationResult.success(data={
         "version": version,
         "notes": str(release.get("body") or "").strip()[:MAX_NOTES_LENGTH],
         "url": str(release.get("html_url") or RELEASES_PAGE),
+        "published_at": str(release.get("published_at") or ""),
+        "size": int(asset.get("size") or 0),
     })
+
+
+def _select_asset(release: dict) -> dict | None:
+    """Pick the app .exe from a release: ANaneRAM first, then the legacy names."""
+    assets = [
+        asset
+        for asset in release.get("assets", [])
+        if str(asset.get("name", "")).lower().endswith(".exe")
+        and asset.get("browser_download_url")
+    ]
+    release_tag = str(release.get("tag_name", "")).strip()
+    if release_tag and not release_tag.lower().startswith("v"):
+        release_tag = f"v{release_tag}"
+    expected_names = (
+        [f"ANaneRAM-{release_tag}.exe", f"EvanovarRAM-{release_tag}.exe"] if release_tag else []
+    )
+    preferred = next(
+        (
+            asset
+            for name in expected_names
+            for asset in assets
+            if asset["name"].lower() == name.lower()
+        ),
+        None,
+    )
+    selected = preferred or next(
+        (
+            asset
+            for asset in assets
+            if RELEASE_ASSET_PATTERN.fullmatch(asset["name"])
+        ),
+        None,
+    )
+    selected = selected or next(
+        (
+            asset
+            for asset in assets
+            if asset["name"].lower()
+            in {name.lower() for name in LEGACY_ASSET_NAMES}
+        ),
+        None,
+    )
+    return selected
 
 
 def get_exe_asset() -> dict | None:
@@ -109,42 +156,7 @@ def get_exe_asset() -> dict | None:
         response = requests.get(GITHUB_API, timeout=8)
         response.raise_for_status()
         release = response.json()
-        assets = [
-            asset
-            for asset in release.get("assets", [])
-            if str(asset.get("name", "")).lower().endswith(".exe")
-            and asset.get("browser_download_url")
-        ]
-        release_tag = str(release.get("tag_name", "")).strip()
-        if release_tag and not release_tag.lower().startswith("v"):
-            release_tag = f"v{release_tag}"
-        expected_name = f"EvanovarRAM-{release_tag}.exe" if release_tag else ""
-        preferred = next(
-            (
-                asset
-                for asset in assets
-                if expected_name
-                and asset["name"].lower() == expected_name.lower()
-            ),
-            None,
-        )
-        selected = preferred or next(
-            (
-                asset
-                for asset in assets
-                if RELEASE_ASSET_PATTERN.fullmatch(asset["name"])
-            ),
-            None,
-        )
-        selected = selected or next(
-            (
-                asset
-                for asset in assets
-                if asset["name"].lower()
-                in {name.lower() for name in LEGACY_ASSET_NAMES}
-            ),
-            None,
-        )
+        selected = _select_asset(release)
         if not selected:
             return None
         return {
@@ -323,7 +335,7 @@ try {{
     Remove-Item -LiteralPath $UpdateDirectory -Force -ErrorAction SilentlyContinue
     exit 0
 }} catch {{
-    $detail = "ANane RAM automatic update failed.`r`n"
+    $detail = "ANAne RAM automatic update failed.`r`n"
     $detail += "Timestamp: $([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))`r`n"
     $detail += "Destination: $DestinationPath`r`n"
     $detail += "Error: $($_.Exception.Message)"
@@ -406,7 +418,7 @@ def download_update(
             on_progress(0)
             asset = get_exe_asset()
             if not asset:
-                on_done(False, "No ANane RAM executable was found in the latest release.")
+                on_done(False, "No ANAne RAM executable was found in the latest release.")
                 return
 
             url, filename = asset["url"], asset["name"]

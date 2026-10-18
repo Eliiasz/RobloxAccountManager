@@ -116,3 +116,4 @@ jobs:
           echo "- Admin page: $url/admin" >> "$GITHUB_STEP_SUMMARY"
           echo "- API: $url/api/activate" >> "$GITHUB_STEP_SUMMARY"
           echo "Admin page: $url/admin"
+          echo "::notice title=License admin page::$url/admin"

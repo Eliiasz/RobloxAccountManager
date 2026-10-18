@@ -31,7 +31,30 @@ class LatestReleaseTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(result.data, {
             "version": "2.8.0", "notes": "## New\n- search", "url": "https://github.com/x/y/releases/tag/v2.8.0",
+            "published_at": "", "size": 0,
         })
+
+    def test_release_reports_new_exe_size_and_date(self):
+        result = self.fetch(response(payload={
+            "tag_name": "v2.8.0", "published_at": "2026-10-19T00:00:00Z",
+            "assets": [
+                {"name": "EvanovarRAM-v2.8.0.exe", "size": 1, "browser_download_url": "https://github.com/a"},
+                {"name": "ANaneRAM-v2.8.0.exe", "size": 2, "browser_download_url": "https://github.com/b"},
+            ],
+        }))
+        self.assertEqual(result.data["size"], 2)
+        self.assertEqual(result.data["published_at"], "2026-10-19T00:00:00Z")
+
+    def test_new_asset_name_preferred_and_legacy_still_found(self):
+        both = {"tag_name": "v2.8.0", "assets": [
+            {"name": "EvanovarRAM-v2.8.0.exe", "browser_download_url": "https://github.com/old"},
+            {"name": "ANaneRAM-v2.8.0.exe", "browser_download_url": "https://github.com/new"},
+        ]}
+        self.assertEqual(updater._select_asset(both)["name"], "ANaneRAM-v2.8.0.exe")
+        legacy = {"tag_name": "v2.8.0", "assets": [
+            {"name": "EvanovarRAM-v2.8.0.exe", "browser_download_url": "https://github.com/old"},
+        ]}
+        self.assertEqual(updater._select_asset(legacy)["name"], "EvanovarRAM-v2.8.0.exe")
 
     def test_missing_notes_and_link_get_defaults(self):
         result = self.fetch(response(payload={"tag_name": "2.8.0", "body": None}))

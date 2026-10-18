@@ -1,6 +1,6 @@
 name: Build EXE
 
-# Builds EvanovarRAM.exe on a Windows runner and attaches it to the run as a
+# Builds ANaneRAM.exe on a Windows runner and attaches it to the run as a
 # downloadable artifact. Runs on every push to main, or manually from the
 # Actions tab ("Run workflow").
 
@@ -47,7 +47,7 @@ jobs:
       - name: Upload EXE
         uses: actions/upload-artifact@v7
         with:
-          name: EvanovarRAM-proxy
-          path: dist/EvanovarRAM.exe
+          name: ANaneRAM
+          path: dist/ANaneRAM.exe
           if-no-files-found: error
           retention-days: 30

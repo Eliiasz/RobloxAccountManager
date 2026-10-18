@@ -93,7 +93,7 @@ def main():
             fatal=True,
         )
         diagnostics.show_native_error(
-            "ANane RAM Could Not Start",
+            "ANAne RAM Could Not Start",
             "The application encountered an unexpected error.\n\n"
             f"Crash report:\n{crash_path or diagnostics.get_session_log_path()}",
         )

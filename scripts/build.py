@@ -17,7 +17,7 @@ ASSETS_ROOT = PROJECT_ROOT / "assets"
 SPEC_PATH = PROJECT_ROOT / "packaging" / "EvanovarRAM.spec"
 VERSION_MODULE_PATH = SOURCE_ROOT / "utils" / "version.py"
 VERSION_INFO_PATH = PROJECT_ROOT / "build" / "version_info.txt"
-OUTPUT_PATH = PROJECT_ROOT / "dist" / "EvanovarRAM.exe"
+OUTPUT_PATH = PROJECT_ROOT / "dist" / "ANaneRAM.exe"
 
 _VERSION_ASSIGNMENT = re.compile(
     r'^\s*APP_VERSION\s*=\s*["\']([^"\']+)["\']\s*$'
@@ -63,12 +63,12 @@ def generate_version_info(version: str) -> None:
         "      StringTable(",
         "        u'040904B0',",
         "        [StringStruct(u'CompanyName', u'evanovar'),",
-        "        StringStruct(u'FileDescription', u'ANane RAM'),",
+        "        StringStruct(u'FileDescription', u"ANAne's Roblox Account Manager"),",
         f"        StringStruct(u'FileVersion', u'{windows_version}'),",
-        "        StringStruct(u'InternalName', u'EvanovarRAM'),",
+        "        StringStruct(u'InternalName', u'ANaneRAM'),",
         "        StringStruct(u'LegalCopyright', u'Copyright (C) evanovar'),",
-        "        StringStruct(u'OriginalFilename', u'EvanovarRAM.exe'),",
-        "        StringStruct(u'ProductName', u'ANane RAM'),",
+        "        StringStruct(u'OriginalFilename', u'ANaneRAM.exe'),",
+        "        StringStruct(u'ProductName', u"ANAne's Roblox Account Manager"),",
         f"        StringStruct(u'ProductVersion', u'{windows_version}')])",
         "      ]),",
         "    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])",
@@ -107,9 +107,15 @@ def validate_release_tag(version: str) -> bool:
     return True
 
 
+# Copies 2.7.x and older look for "EvanovarRAM-v*.exe" in a release, so the
+# same file is also attached under that name to keep their updates working.
+LEGACY_RELEASE_PREFIX = "EvanovarRAM"
+
+
 def create_release_asset(version: str) -> Path:
-    release_path = PROJECT_ROOT / "dist" / f"EvanovarRAM-v{version}.exe"
+    release_path = PROJECT_ROOT / "dist" / f"ANaneRAM-v{version}.exe"
     shutil.copy2(OUTPUT_PATH, release_path)
+    shutil.copy2(OUTPUT_PATH, PROJECT_ROOT / "dist" / f"{LEGACY_RELEASE_PREFIX}-v{version}.exe")
     return release_path
 
 
@@ -167,7 +173,7 @@ def main() -> int:
         print(f"[ERROR] Build preparation failed: {exc}")
         return 1
 
-    print(f"[INFO] Building ANane RAM {version}")
+    print(f"[INFO] Building ANAne RAM {version}")
     environment = build_environment()
     result = subprocess.run(
         [
