@@ -28,16 +28,25 @@ OK = "ok"
 BANNED = "banned"
 TERMINATED = "terminated"
 LOCKED = "locked"
+NEEDS_VERIFY = "verify"
 UNKNOWN = "unknown"
+
+# Set on an account when Roblox showed it a "not a bot" check during launch;
+# cleared after its next confirmed launch.
+SECURITY_CHECK_KEY = "security_check"
 
 LABELS = {
     OK: "OK",
     BANNED: "Banned",
     TERMINATED: "Terminated",
     LOCKED: "Locked / signed out",
+    NEEDS_VERIFY: "Needs verification",
     UNKNOWN: "Unknown",
 }
 PROBLEM_STATUSES = (BANNED, TERMINATED, LOCKED)
+# Listed and tickable, but never ticked automatically: it can be fixed by
+# verifying the account, so it is not a reason to delete it by default.
+ATTENTION_STATUSES = (NEEDS_VERIFY,)
 
 _AUTH_URL = "https://users.roblox.com/v1/users/authenticated"
 _MODERATION_URL = "https://usermoderation.roblox.com/v1/not-approved"
@@ -147,6 +156,18 @@ def _describe_punishment(data: dict) -> str:
     return kind
 
 
+def _security_check_note(data: dict) -> str:
+    when = (data or {}).get(SECURITY_CHECK_KEY)
+    if not when:
+        return ""
+    stamp = when if isinstance(when, str) else ""
+    return (
+        "Roblox showed a \"Verifying you're not a bot\" check when launching"
+        + (f" ({stamp})" if stamp else "")
+        + ". Verify it on roblox.com; it clears after the next successful launch."
+    )
+
+
 def check_account(username: str, data: dict, session: requests.Session) -> HealthResult:
     cookie = (data or {}).get("cookie", "")
     stored_id = 0
@@ -172,6 +193,10 @@ def check_account(username: str, data: dict, session: requests.Session) -> Healt
             # Moderation status unreadable: fall back to the public profile.
             if _is_terminated(session, user_id):
                 return HealthResult(username, TERMINATED, "Account is terminated.", user_id)
+        flagged = _security_check_note(data)
+        if flagged:
+            return HealthResult(username, NEEDS_VERIFY, flagged, user_id)
+        if punishment is None:
             return HealthResult(username, OK, "Signed in (ban status could not be read).", user_id)
         return HealthResult(username, OK, "Signed in, no moderation.", user_id)
 

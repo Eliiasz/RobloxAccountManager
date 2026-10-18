@@ -94,6 +94,22 @@ class BanCheckTests(unittest.TestCase):
         r = self.check({"authenticated": _Response(401), "users/5": _Response(200, {"isBanned": True})})
         self.assertEqual(r.status, health.TERMINATED)
 
+    def test_security_check_flag_is_listed_but_not_a_delete_problem(self):
+        r = health.check_account(
+            "acc", {"cookie": "x", "user_id": 5, health.SECURITY_CHECK_KEY: "2026-10-19 02:00"},
+            _Session({"authenticated": _Response(200, {"id": 5}), "not-approved": _Response(200, {}),
+                      "users/5": _Response(200, {"isBanned": False})}))
+        self.assertEqual(r.status, health.NEEDS_VERIFY)
+        self.assertNotIn(r.status, health.PROBLEM_STATUSES)
+
+    def test_ban_outranks_security_check(self):
+        r = health.check_account(
+            "acc", {"cookie": "x", "user_id": 5, health.SECURITY_CHECK_KEY: "x"},
+            _Session({"authenticated": _Response(200, {"id": 5}),
+                      "not-approved": _Response(200, {"punishmentTypeDescription": "Ban 1 Day"}),
+                      "users/5": _Response(200, {"isBanned": False})}))
+        self.assertEqual(r.status, health.BANNED)
+
     def test_server_error_is_unknown_not_deleted(self):
         r = self.check({"authenticated": _Response(500), "users/5": _Response(200, {"isBanned": False})})
         self.assertEqual(r.status, health.UNKNOWN)

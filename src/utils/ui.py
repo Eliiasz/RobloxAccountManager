@@ -3163,9 +3163,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         lay.addLayout(hdr)
 
         desc = QLabel(
-            "Scans every saved account and lists the ones that are banned, terminated, or whose login "
-            "no longer works (locked / signed out). Tick the ones you want gone and delete them. "
-            "Accounts marked Unknown could not be checked and are never ticked automatically."
+            "Scans every saved account and lists the ones that are banned, terminated, whose login "
+            "no longer works (locked / signed out), or that got Roblox's \"not a bot\" security check "
+            "when launching (Needs verification). Tick the ones you want gone and delete them. "
+            "Needs verification and Unknown accounts are listed but never ticked automatically."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
@@ -3236,6 +3237,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         return panel
 
     _BAN_COLORS = {
+        health_mod.NEEDS_VERIFY: "#d4b44a",
         health_mod.BANNED: "#e06c6c",
         health_mod.TERMINATED: "#e06c6c",
         health_mod.LOCKED: "#e0a85c",
@@ -3278,7 +3280,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         item = QTreeWidgetItem([result.username, result.label, result.detail])
         item.setData(0, Qt.ItemDataRole.UserRole, result.status)
         problem = result.status in health_mod.PROBLEM_STATUSES
-        if problem or result.status == health_mod.UNKNOWN:
+        if problem or result.status in (health_mod.UNKNOWN, *health_mod.ATTENTION_STATUSES):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(0, Qt.CheckState.Checked if problem else Qt.CheckState.Unchecked)
         item.setForeground(1, QColor(self._BAN_COLORS.get(result.status, TEXT)))

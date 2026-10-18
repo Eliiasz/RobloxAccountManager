@@ -1142,8 +1142,34 @@ class RobloxAccountManager:
         "LAUNCH_EVIDENCE_MISSING", "LAUNCH_ACCOUNT_ID_MISSING",
     )
 
+    def _remember_security_check(self, username, challenged):
+        """Flag accounts Roblox challenged so Ban Check can list them."""
+        accounts = getattr(self, "accounts", None)
+        lock = getattr(self, "_accounts_lock", None)
+        if not isinstance(accounts, dict) or lock is None:
+            return
+        with lock:
+            data = accounts.get(username)
+            if not isinstance(data, dict):
+                return
+            had = bool(data.get("security_check"))
+            if challenged:
+                data["security_check"] = time.strftime("%Y-%m-%d %H:%M")
+            elif had:
+                data.pop("security_check", None)
+            else:
+                return
+            try:
+                self.save_accounts()
+            except Exception as exc:
+                print(f"[WARNING] Could not save security check flag for {username}: {exc}")
+
     def _confirm(self, result, session, before, username):
         confirmed = launch_monitor.confirm_launch(result, session, before, username)
+        if confirmed:
+            self._remember_security_check(username, False)
+        elif confirmed.code == "ROBLOX_SECURITY_CHALLENGE":
+            self._remember_security_check(username, True)
         if not confirmed and confirmed.code in self._BLOCKING_CONFIRM_CODES:
             # Batch, WebSocket and Auto-Rejoin must not send more tickets
             # while authentication remains unresolved in this session.
