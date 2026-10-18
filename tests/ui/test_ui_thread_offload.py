@@ -74,7 +74,7 @@ class StartMultiRobloxTests(unittest.TestCase):
         self.enterContext(patch.object(ui.actions, "is_multi_roblox_running", return_value=False))
         self.enterContext(patch.object(ui.actions, "is_roblox_running", return_value=True))
         self.save = self.enterContext(patch.object(ui.actions, "save_ui_setting"))
-        self.kill = self.enterContext(patch.object(ui.actions, "kill_roblox"))
+        self.kill = self.enterContext(patch.object(ui.actions, "kill_all_roblox_fast"))
 
     def start(self, answer):
         with patch.object(ui.QMessageBox, "question", return_value=answer):
