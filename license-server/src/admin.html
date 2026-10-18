@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ANane RAM Keys</title>
+<style>
+  :root {
+    --bg: #111214; --panel: #1a1b1e; --raised: #222327; --line: #2e3035;
+    --text: #e8e8ea; --muted: #8d9097; --accent: #e8a317; --accent-ink: #1a1300;
+    --good: #5cc08a; --warn: #e0a85c; --bad: #e06c6c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  input, select { background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; min-width: 0; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button.small { padding: 4px 9px; font-size: 12px; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; min-width: 120px; }
+  .stat b { display: block; font-size: 20px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .new-keys { margin-top: 12px; background: var(--raised); border: 1px dashed var(--accent); border-radius: 8px; padding: 10px; display: none; }
+  .new-keys pre { margin: 6px 0 8px; font: 13px/1.6 Consolas, monospace; white-space: pre-wrap; user-select: all; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 860px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.key { font-family: Consolas, monospace; white-space: nowrap; }
+  td.mono { font-family: Consolas, monospace; color: var(--muted); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; border: 1px solid var(--line); }
+  .pill.unused { color: var(--muted); }
+  .pill.active { color: var(--good); border-color: var(--good); }
+  .pill.expired, .pill.revoked { color: var(--bad); border-color: var(--bad); }
+  .pill.free { color: var(--warn); border-color: var(--warn); }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .toolbar input { flex: 1 1 220px; }
+  #msg { min-height: 20px; margin: 8px 0 0; color: var(--muted); }
+  #msg.err { color: var(--bad); }
+  #login { max-width: 380px; margin: 12vh auto 0; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="login" class="card">
+    <h1>ANane RAM Keys</h1>
+    <p class="sub">Enter your admin password.</p>
+    <form id="loginForm" class="row">
+      <label style="flex:1">Password<input id="pw" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Log in</button>
+    </form>
+    <p id="loginMsg" class="sub" style="margin-top:10px"></p>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div><h1>ANane RAM Keys</h1><p class="sub" style="margin:0">Generate keys, see who uses them, move a key to a new PC.</p></div>
+      <button id="logout" type="button">Log out</button>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="card">
+      <form id="genForm" class="row">
+        <label>Type
+          <select id="genType">
+            <option value="30d">30 days (starts when used)</option>
+            <option value="lifetime">Lifetime</option>
+          </select>
+        </label>
+        <label>How many<input id="genCount" type="number" min="1" max="100" value="1" style="width:90px"></label>
+        <label style="flex:1 1 200px">Note (optional)<input id="genNote" maxlength="80" placeholder="e.g. friend's name"></label>
+        <button class="primary" type="submit">Generate keys</button>
+      </form>
+      <div class="new-keys" id="newKeys">
+        <strong>New keys</strong>
+        <pre id="newKeysText"></pre>
+        <button type="button" id="copyNew" class="small">Copy all</button>
+      </div>
+      <p id="msg"></p>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <input id="search" placeholder="Search key or note">
+        <select id="filter">
+          <option value="all">All keys</option>
+          <option value="unused">Unused</option>
+          <option value="active">Active</option>
+          <option value="free">Waiting for new PC</option>
+          <option value="expired">Expired</option>
+          <option value="revoked">Revoked</option>
+        </select>
+        <button type="button" id="refresh">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Status</th><th>Days left</th><th>PC (HWID)</th><th>Last seen</th><th>Note</th><th>Actions</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let password = "";
+  try { password = sessionStorage.getItem("anane_admin") || ""; } catch (e) {}
+  let keys = [];
+  let serverNow = 0;
+
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: body ? "POST" : "GET",
+      headers: { "content-type": "application/json", "x-admin-password": password },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({ ok: false, message: "Bad response" }));
+    if (!data.ok) throw Object.assign(new Error(data.message || "Request failed"), { status: res.status });
+    return data;
+  }
+
+  function status(k) {
+    if (k.revoked) return "revoked";
+    if (k.expires_at && serverNow >= k.expires_at) return "expired";
+    if (!k.activated_at) return "unused";
+    if (!k.hwid) return "free";
+    return "active";
+  }
+  const LABEL = { unused: "Unused", active: "Active", free: "Waiting for new PC", expired: "Expired", revoked: "Revoked" };
+
+  function daysLeft(k) {
+    if (k.type === "lifetime") return "∞";
+    if (!k.expires_at) return "30 (not started)";
+    const d = (k.expires_at - serverNow) / 86400;
+    return d <= 0 ? "0" : d < 1 ? "<1" : String(Math.floor(d));
+  }
+  function when(ts) {
+    if (!ts) return "—";
+    return new Date(ts * 1000).toLocaleString();
+  }
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function render() {
+    const q = $("search").value.trim().toLowerCase();
+    const f = $("filter").value;
+    const counts = { all: keys.length, unused: 0, active: 0, free: 0, expired: 0, revoked: 0 };
+    keys.forEach((k) => counts[status(k)]++);
+    $("stats").innerHTML = ["all", "active", "unused", "free", "expired", "revoked"].map((s) =>
+      `<div class="stat"><b>${counts[s]}</b><span>${s === "all" ? "Total keys" : LABEL[s]}</span></div>`).join("");
+
+    const rows = keys.filter((k) => {
+      const s = status(k);
+      if (f !== "all" && s !== f) return false;
+      return !q || k.key.toLowerCase().includes(q) || (k.note || "").toLowerCase().includes(q);
+    });
+    $("rows").innerHTML = rows.length ? rows.map((k) => {
+      const s = status(k);
+      return `<tr>
+        <td class="key">${esc(k.key)}</td>
+        <td>${k.type === "lifetime" ? "Lifetime" : "30 days"}</td>
+        <td><span class="pill ${s}">${LABEL[s]}</span></td>
+        <td>${daysLeft(k)}</td>
+        <td class="mono" title="${esc(k.hwid || "")}">${k.hwid ? esc(k.hwid.slice(0, 10)) + "…" : "—"}</td>
+        <td>${when(k.last_seen_at)}${k.last_version ? ` <span class="sub">v${esc(k.last_version)}</span>` : ""}</td>
+        <td>${esc(k.note)}</td>
+        <td><div class="actions">
+          <button class="small" data-act="copy" data-key="${esc(k.key)}">Copy</button>
+          ${k.hwid ? `<button class="small" data-act="reset" data-key="${esc(k.key)}">Reset HWID</button>` : ""}
+          <button class="small ${k.revoked ? "" : "danger"}" data-act="${k.revoked ? "unrevoke" : "revoke"}" data-key="${esc(k.key)}">${k.revoked ? "Enable" : "Revoke"}</button>
+          <button class="small danger" data-act="delete" data-key="${esc(k.key)}">Delete</button>
+        </div></td></tr>`;
+    }).join("") : `<tr><td colspan="8" class="sub">No keys here yet.</td></tr>`;
+  }
+
+  function say(text, err) {
+    $("msg").textContent = text;
+    $("msg").className = err ? "err" : "";
+  }
+
+  async function load() {
+    const data = await api("/api/admin/keys");
+    keys = data.keys;
+    serverNow = data.now;
+    render();
+  }
+
+  async function enter() {
+    try {
+      await load();
+      $("login").classList.add("hidden");
+      $("app").classList.remove("hidden");
+    } catch (e) {
+      password = "";
+      try { sessionStorage.removeItem("anane_admin"); } catch (_) {}
+      $("loginMsg").textContent = e.message;
+    }
+  }
+
+  $("loginForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    password = $("pw").value;
+    try { sessionStorage.setItem("anane_admin", password); } catch (_) {}
+    enter();
+  });
+  $("logout").addEventListener("click", () => {
+    password = "";
+    try { sessionStorage.removeItem("anane_admin"); } catch (_) {}
+    location.reload();
+  });
+
+  $("genForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const data = await api("/api/admin/keys", {
+        type: $("genType").value, count: $("genCount").value, note: $("genNote").value,
+      });
+      $("newKeysText").textContent = data.keys.join("\n");
+      $("newKeys").style.display = "block";
+      say(`Created ${data.keys.length} key${data.keys.length === 1 ? "" : "s"}.`);
+      await load();
+    } catch (err) { say(err.message, true); }
+  });
+  $("copyNew").addEventListener("click", () => navigator.clipboard.writeText($("newKeysText").textContent));
+
+  $("search").addEventListener("input", render);
+  $("filter").addEventListener("change", render);
+  $("refresh").addEventListener("click", () => load().catch((e) => say(e.message, true)));
+
+  $("rows").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const key = btn.dataset.key;
+    const act = btn.dataset.act;
+    try {
+      if (act === "copy") { await navigator.clipboard.writeText(key); say(`Copied ${key}`); return; }
+      if (act === "reset") {
+        if (!confirm(`Reset HWID for ${key}?\n\nThe key will be freed so it can be activated on a new PC. The old PC stops working at its next check.`)) return;
+        await api("/api/admin/reset", { key });
+        say(`HWID reset for ${key}.`);
+      }
+      if (act === "revoke" || act === "unrevoke") {
+        if (act === "revoke" && !confirm(`Revoke ${key}? The app using it will lock at its next check.`)) return;
+        await api("/api/admin/revoke", { key, revoked: act === "revoke" });
+        say(`${act === "revoke" ? "Revoked" : "Enabled"} ${key}.`);
+      }
+      if (act === "delete") {
+        if (!confirm(`Delete ${key} permanently?`)) return;
+        await api("/api/admin/delete", { key });
+        say(`Deleted ${key}.`);
+      }
+      await load();
+    } catch (err) { say(err.message, true); }
+  });
+
+  if (password) enter();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,118 @@
+name: License Server
+
+# Deploys the ANane RAM license server to Cloudflare Workers.
+# Needs repository secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, LICENSE_ADMIN_PASSWORD.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "license-server/**"
+      - ".github/workflows/license-server.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: license-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: license-server
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WORKER: anane-license
+      DB_NAME: anane-licenses
+      WRANGLER: npx --yes wrangler@4
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Check secrets
+        run: |
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!name}" ]; then echo "::error::Missing repository secret $name"; exit 1; fi
+          done
+          if [ -z "${{ secrets.LICENSE_ADMIN_PASSWORD }}" ]; then
+            echo "::error::Missing repository secret LICENSE_ADMIN_PASSWORD"; exit 1
+          fi
+
+      - name: Create or find the key database
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database"
+          auth=(-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          id=$(curl -fsS "${auth[@]}" "$api?name=$DB_NAME" | jq -r --arg n "$DB_NAME" '.result[] | select(.name==$n) | .uuid' | head -n1)
+          if [ -z "$id" ]; then
+            echo "Creating D1 database $DB_NAME"
+            id=$(curl -fsS "${auth[@]}" -H "content-type: application/json" \
+              -d "{\"name\":\"$DB_NAME\"}" "$api" | jq -r '.result.uuid')
+          fi
+          if [ -z "$id" ] || [ "$id" = "null" ]; then echo "::error::Could not create the D1 database"; exit 1; fi
+          sed -i "s/__D1_DATABASE_ID__/$id/" wrangler.toml
+          echo "D1 database: $id"
+
+      - name: Apply database schema
+        run: $WRANGLER d1 execute "$DB_NAME" --remote --file schema.sql
+
+      - name: Deploy worker
+        run: $WRANGLER deploy
+
+      - name: Signing key (created once, never replaced)
+        run: |
+          set -euo pipefail
+          secrets=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER/secrets" \
+            | jq -r '.result[].name')
+          if echo "$secrets" | grep -qx SIGNING_KEY && echo "$secrets" | grep -qx SIGNING_PUBLIC_KEY; then
+            echo "Signing key already exists, keeping it."
+            exit 0
+          fi
+          echo "Creating a new Ed25519 signing key."
+          node -e '
+            const { generateKeyPairSync } = require("crypto");
+            const fs = require("fs");
+            const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+            const pkcs8 = privateKey.export({ type: "pkcs8", format: "der" }).toString("base64");
+            const raw = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+            fs.writeFileSync("/tmp/sk", pkcs8);
+            fs.writeFileSync("/tmp/pk", raw);
+          '
+          $WRANGLER secret put SIGNING_KEY < /tmp/sk
+          $WRANGLER secret put SIGNING_PUBLIC_KEY < /tmp/pk
+          rm -f /tmp/sk /tmp/pk
+
+      - name: Admin password
+        env:
+          ADMIN_PASSWORD: ${{ secrets.LICENSE_ADMIN_PASSWORD }}
+        run: printf '%s' "$ADMIN_PASSWORD" | $WRANGLER secret put ADMIN_PASSWORD
+
+      - name: Show URLs and check the server
+        run: |
+          set -euo pipefail
+          sub=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r '.result.subdomain')
+          url="https://$WORKER.$sub.workers.dev"
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "$url/api/health" >/dev/null; then break; fi
+            sleep 5
+          done
+          curl -fsS "$url/api/health"; echo
+          pk=$(curl -fsS "$url/api/pubkey" | jq -r '.public_key')
+          if [ -z "$pk" ]; then echo "::error::Server has no public key"; exit 1; fi
+          echo "### License server is live" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Admin page: $url/admin" >> "$GITHUB_STEP_SUMMARY"
+          echo "- API: $url/api/activate" >> "$GITHUB_STEP_SUMMARY"
+          echo "Admin page: $url/admin"

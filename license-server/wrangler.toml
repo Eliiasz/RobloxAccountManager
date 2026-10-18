@@ -1,0 +1,15 @@
+name = "anane-license"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false
+
+# database_id is filled in by .github/workflows/license-server.yml at deploy time.
+[[d1_databases]]
+binding = "DB"
+database_name = "anane-licenses"
+database_id = "__D1_DATABASE_ID__"
