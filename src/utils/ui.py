@@ -6568,8 +6568,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 print(f"[INFO] Update check failed: {result.detail}")
                 return
             latest = result.data["version"]
-            skipped = actions.load_ui_settings().get(SKIPPED_UPDATE_SETTING, "")
-            if updater_mod.is_newer(APP_VERSION, latest) and latest != skipped:
+            # No skipping: a newer version is offered on every start until installed.
+            if updater_mod.is_newer(APP_VERSION, latest):
                 self._latest_release = result.data
                 self._bridge.update_available.emit(latest)
         threading.Thread(target=_worker, daemon=True, name="UpdateCheck").start()
@@ -6666,11 +6666,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
         manual_btn = QPushButton("Manual Download")
-        skip_btn = QPushButton("Skip This Version")
-        skip_btn.setToolTip("Do not show this update again. A newer version will still be offered.")
-        ignore_btn = QPushButton("Ignore")
+        ignore_btn = QPushButton("Later")
+        ignore_btn.setToolTip("Close for now. The update is offered again next time the app starts.")
         btn_row.addWidget(manual_btn)
-        btn_row.addWidget(skip_btn)
         btn_row.addWidget(ignore_btn)
         lay.addLayout(btn_row)
 
@@ -6697,7 +6695,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         def _set_buttons_enabled(enabled: bool) -> None:
             dl_btn.setEnabled(enabled)
             manual_btn.setEnabled(enabled)
-            skip_btn.setEnabled(enabled)
             ignore_btn.setEnabled(enabled)
 
         # Download signal connections
@@ -6748,10 +6745,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         dl_btn.clicked.connect(_on_download_clicked)
         manual_btn.clicked.connect(lambda: (
             webbrowser.open(updater_mod.RELEASES_PAGE),
-            dlg.accept(),
-        ))
-        skip_btn.clicked.connect(lambda: (
-            actions.save_ui_setting(SKIPPED_UPDATE_SETTING, latest_version),
             dlg.accept(),
         ))
         ignore_btn.clicked.connect(dlg.accept)
@@ -8061,9 +8054,38 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
 
+        actions_header = QHBoxLayout()
+        actions_header.setContentsMargins(0, 0, 0, 0)
         title = QLabel("Actions")
         title.setObjectName("sectionTitle")
-        lay.addWidget(title)
+        actions_header.addWidget(title)
+        actions_header.addStretch(1)
+        _discord_path = os.path.join(get_data_dir(), "discordlogo.png")
+        if not os.path.exists(_discord_path):
+            _discord_path = get_resource_path("assets", "discordlogo.png")
+        discord_btn = QPushButton()
+        discord_btn.setObjectName("discordBtn")
+        discord_btn.setFixedSize(18, 18)
+        discord_btn.setToolTip("Join Discord server")
+        discord_btn.setFlat(True)
+        discord_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        discord_btn.setStyleSheet(
+            "QPushButton#discordBtn { background: transparent; border: 0; padding: 0; }"
+            "QPushButton#discordBtn:hover { background: transparent; }"
+        )
+        if os.path.exists(_discord_path):
+            _dpix = QPixmap(_discord_path).scaled(
+                16, 16,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            discord_btn.setIcon(QIcon(_dpix))
+            discord_btn.setIconSize(QSize(16, 16))
+        discord_btn.clicked.connect(
+            lambda: webbrowser.open(self.DISCORD_SERVER_URL)
+        )
+        actions_header.addWidget(discord_btn)
+        lay.addLayout(actions_header)
 
         # Current place label
         self._game_name_label = QLabel("")
@@ -8179,31 +8201,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         recent_header.addWidget(recent_lbl)
         recent_header.addStretch(1)
 
-        _discord_path = os.path.join(get_data_dir(), "discordlogo.png")
-        if not os.path.exists(_discord_path):
-            _discord_path = get_resource_path("assets", "discordlogo.png")
-        discord_btn = QPushButton()
-        discord_btn.setObjectName("discordBtn")
-        discord_btn.setFixedSize(18, 18)
-        discord_btn.setToolTip("Join Discord server")
-        discord_btn.setFlat(True)
-        discord_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        discord_btn.setStyleSheet(
-            "QPushButton#discordBtn { background: transparent; border: 0; padding: 0; }"
-            "QPushButton#discordBtn:hover { background: transparent; }"
-        )
-        if os.path.exists(_discord_path):
-            _dpix = QPixmap(_discord_path).scaled(
-                16, 16,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            discord_btn.setIcon(QIcon(_dpix))
-            discord_btn.setIconSize(QSize(16, 16))
-        discord_btn.clicked.connect(
-            lambda: webbrowser.open("https://discord.gg/SZaZU8zwZA")
-        )
-        recent_header.addWidget(discord_btn)
 
         lay.addLayout(recent_header)
 
@@ -9528,6 +9525,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
     # Contact details shown on the Contact Us page. Leave a value empty to show
     # that channel as "Coming soon".
+    DISCORD_SERVER_URL = "https://discord.gg/fg9RmZ65kn"
     CONTACT_DISCORD_NAME = "hex0759"
     CONTACT_DISCORD_URL = "https://discord.com/users/616978543318007808"
     CONTACT_TELEGRAM_NAME = ""

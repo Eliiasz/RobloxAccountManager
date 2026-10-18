@@ -227,8 +227,35 @@ def _system_powershell() -> str:
     )
 
 
+_BUNDLE_ENV_PREFIXES = ("_PYI_", "_MEIPASS", "PYINSTALLER_")
+
+
 def _powershell_environment() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+    """Environment for the installer script, and so for the relaunched app.
+
+    The one-file build exports variables (_PYI_*, _MEIPASS2) that point at
+    this copy's temporary unpack folder. If the relaunched app inherited them
+    it would look for its files in that folder, which is deleted when this
+    copy exits ("Failed to load Python DLL"). Drop them, and anything else
+    pointing inside the unpack folder, so the new version starts clean.
+    """
+    bundle_dir = os.path.normcase(os.path.abspath(getattr(sys, "_MEIPASS", "") or "")) if getattr(sys, "_MEIPASS", "") else ""
+    environment: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper == "PSMODULEPATH" or upper.startswith(_BUNDLE_ENV_PREFIXES):
+            continue
+        if bundle_dir and bundle_dir in os.path.normcase(value):
+            if upper == "PATH":
+                value = os.pathsep.join(
+                    part for part in value.split(os.pathsep)
+                    if bundle_dir not in os.path.normcase(part)
+                )
+            else:
+                continue
+        environment[key] = value
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment
 
 
 def _build_installer_script() -> str:

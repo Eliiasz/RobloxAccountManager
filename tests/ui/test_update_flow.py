@@ -41,11 +41,9 @@ class StartupCheckTests(unittest.TestCase):
                 window, _ = self.check(release(version))
                 window._bridge.update_available.emit.assert_not_called()
 
-    def test_a_skipped_version_is_not_announced_but_a_newer_one_is(self):
+    def test_updates_cannot_be_skipped_even_with_an_old_skip_saved(self):
         window, _ = self.check(release("9.9.9"), {"skipped_update_version": "9.9.9"})
-        window._bridge.update_available.emit.assert_not_called()
-        window, _ = self.check(release("9.9.10"), {"skipped_update_version": "9.9.9"})
-        window._bridge.update_available.emit.assert_called_once_with("9.9.10")
+        window._bridge.update_available.emit.assert_called_once_with("9.9.9")
 
     def test_a_failed_check_is_quiet(self):
         window, _ = self.check(OperationResult.failure("UPDATE_CHECK_FAILED", "t", "m", detail="HTTP 500"))
@@ -135,17 +133,14 @@ class UpdateDialogTests(unittest.TestCase):
         self.window._latest_release = None
         self.assertEqual(self.open_dialog()[0]["notes"], [])
 
-    def test_the_dialog_has_the_three_choices(self):
+    def test_the_dialog_has_no_skip_choice(self):
         seen, _ = self.open_dialog()
-        for label in ("Download Automatically", "Manual Download", "Skip This Version", "Ignore"):
+        for label in ("Download Automatically", "Manual Download", "Later"):
             self.assertIn(label, seen["buttons"])
+        self.assertNotIn("Skip This Version", seen["buttons"])
 
-    def test_skipping_remembers_exactly_this_version(self):
-        _seen, save = self.open_dialog(act=lambda s: s["buttons"]["Skip This Version"].click())
-        save.assert_called_once_with("skipped_update_version", "9.9.9")
-
-    def test_ignoring_remembers_nothing(self):
-        seen, save = self.open_dialog(act=lambda s: s["buttons"]["Ignore"].click())
+    def test_later_remembers_nothing(self):
+        seen, save = self.open_dialog(act=lambda s: s["buttons"]["Later"].click())
         save.assert_not_called()
 
 
