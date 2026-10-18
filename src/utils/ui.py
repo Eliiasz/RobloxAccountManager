@@ -2283,8 +2283,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         lay.addWidget(self._nav_queue_lbl)
 
         kill_roblox_button = QPushButton("Kill All Roblox")
-        kill_roblox_button.setToolTip("Instantly close every running Roblox window (no confirmation)")
+        kill_roblox_button.setToolTip(
+            "Instantly close every running Roblox window (no confirmation).\n"
+            "Right-click to turn the Kill All shortcut key on or off."
+        )
         self._kill_roblox_btn = kill_roblox_button
+        kill_roblox_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        kill_roblox_button.customContextMenuRequested.connect(self._show_kill_button_menu)
         icons.set_button_icon(kill_roblox_button, "power", _THEME)
         kill_roblox_button.clicked.connect(self._on_kill_all_roblox)
         lay.addWidget(kill_roblox_button)
@@ -4979,7 +4984,23 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Roblox window, same as the Kill All Roblox button.",
             on_change=self._on_sett_kill_hotkey_enabled,
         )
-        f.addWidget(self._sett_kill_key_chk)
+        self._sett_kill_key_chk.hide()  # state holder; the ON/OFF button is what people use
+        kill_toggle_row = QHBoxLayout()
+        kill_toggle_row.setSpacing(10)
+        self._sett_kill_toggle_btn = QPushButton()
+        self._sett_kill_toggle_btn.setCheckable(True)
+        self._sett_kill_toggle_btn.setFixedSize(84, 30)
+        self._sett_kill_toggle_btn.setToolTip("Turn the Kill All Roblox shortcut on or off")
+        self._sett_kill_toggle_btn.clicked.connect(
+            lambda checked: self._sett_kill_key_chk.setChecked(bool(checked))
+        )
+        self._sett_kill_key_chk.toggled.connect(self._sync_kill_toggle_btn)
+        kill_toggle_row.addWidget(self._sett_kill_toggle_btn)
+        self._sett_kill_state_lbl = QLabel()
+        kill_toggle_row.addWidget(self._sett_kill_state_lbl)
+        kill_toggle_row.addStretch(1)
+        f.addLayout(kill_toggle_row)
+        self._sync_kill_toggle_btn(self._sett_kill_key_chk.isChecked())
         kill_row = QHBoxLayout()
         kill_lbl = QLabel("Shortcut")
         kill_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
@@ -6183,6 +6204,45 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
         return False
 
+    def _sync_kill_toggle_btn(self, on: bool) -> None:
+        btn = getattr(self, "_sett_kill_toggle_btn", None)
+        if btn is None or not isValid(btn):
+            return
+        btn.blockSignals(True)
+        btn.setChecked(bool(on))
+        btn.blockSignals(False)
+        btn.setText("ON" if on else "OFF")
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT_BRIGHT if on else INPUT}; color: {ON_ACCENT if on else TEXT};"
+            f" border: 1px solid {ACCENT_BRIGHT if on else LINE}; font-weight: 700; font-size: 12px; }}"
+        )
+        key = str(actions.get_ui_setting("kill_all_hotkey", "Ctrl+Shift+K") or "Ctrl+Shift+K")
+        lbl = self._sett_kill_state_lbl
+        lbl.setText(f"Shortcut is ON · press {key} to kill all Roblox" if on else "Shortcut is OFF")
+        lbl.setStyleSheet(
+            f"color: {ACCENT_BRIGHT if on else MUTED}; font-size: 12px; font-weight: 700;"
+        )
+
+    def _toggle_kill_hotkey_from_menu(self) -> None:
+        enabled = not bool(actions.get_ui_setting("kill_all_hotkey_enabled", False))
+        actions.save_ui_setting("kill_all_hotkey_enabled", enabled)
+        chk = getattr(self, "_sett_kill_key_chk", None)
+        if chk is not None and isValid(chk):
+            chk.setChecked(enabled)  # drives the same path as the Settings button
+        else:
+            self._on_sett_kill_hotkey_enabled(enabled)
+        print(f"[INFO] Kill All shortcut {'ON' if enabled else 'OFF'}")
+
+    def _show_kill_button_menu(self, pos) -> None:
+        enabled = bool(actions.get_ui_setting("kill_all_hotkey_enabled", False))
+        key = str(actions.get_ui_setting("kill_all_hotkey", "Ctrl+Shift+K") or "Ctrl+Shift+K")
+        menu = QMenu(self)
+        act = menu.addAction(
+            f"Turn shortcut OFF ({key})" if enabled else f"Turn shortcut ON ({key})"
+        )
+        if menu.exec(self._kill_roblox_btn.mapToGlobal(pos)) == act:
+            self._toggle_kill_hotkey_from_menu()
+
     def _on_sett_kill_hotkey_enabled(self, enabled: bool) -> None:
         if hasattr(self, "_sett_kill_key_btn"):
             self._sett_kill_key_btn.setEnabled(bool(enabled))
@@ -6194,6 +6254,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _on_sett_kill_hotkey_changed(self, sequence: str) -> None:
         actions.save_ui_setting("kill_all_hotkey", sequence)
         self._apply_kill_hotkey()
+        self._sync_kill_toggle_btn(bool(actions.get_ui_setting("kill_all_hotkey_enabled", False)))
 
     def _unregister_window_grid_hotkey(self) -> None:
         if self._window_grid_hotkey_registered:
