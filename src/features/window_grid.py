@@ -19,6 +19,13 @@ import features.presence as presence_mod
 DEFAULT_HOTKEY = "Ctrl+Shift+A"
 HOTKEY_ID = 0x52414D47
 KILL_ALL_HOTKEY_ID = 0x52414D4B  # "RAMK": Kill All Roblox shortcut
+MINIMIZE_ALL_HOTKEY_ID = 0x52414D4D  # "RAMM": minimize every Roblox window
+RESTORE_ALL_HOTKEY_ID = 0x52414D52   # "RAMR": restore every Roblox window
+DEFAULT_MINIMIZE_HOTKEY = "F11"
+DEFAULT_RESTORE_HOTKEY = "F10"
+
+_SW_MINIMIZE = 6
+_SW_RESTORE = 9
 WM_HOTKEY = 0x0312
 
 _MOD_ALT = 0x0001
@@ -61,6 +68,8 @@ _user32.RegisterHotKey.argtypes = [
     wintypes.UINT,
     wintypes.UINT,
 ]
+_user32.ShowWindowAsync.restype = wintypes.BOOL
+_user32.ShowWindowAsync.argtypes = [wintypes.HWND, ctypes.c_int]
 _user32.UnregisterHotKey.restype = wintypes.BOOL
 _user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
 
@@ -185,6 +194,32 @@ def _get_roblox_windows() -> list[int]:
             except Exception:
                 pass
     return [largest_by_pid[pid][1] for pid in sorted(largest_by_pid)]
+
+
+def _show_all_roblox_windows(command: int) -> int:
+    """Minimize or restore every visible Roblox window without waiting on them.
+
+    Windows hidden by the Headless Manager are not visible, so they are left
+    alone. ShowWindowAsync never blocks on a busy client.
+    """
+    count = 0
+    for hwnd in _get_roblox_windows():
+        try:
+            # The return value only says whether it was visible before, so it
+            # is not an error signal; every window reached is counted.
+            _user32.ShowWindowAsync(wintypes.HWND(hwnd), command)
+            count += 1
+        except Exception:
+            continue
+    return count
+
+
+def minimize_roblox_windows() -> int:
+    return _show_all_roblox_windows(_SW_MINIMIZE)
+
+
+def restore_roblox_windows() -> int:
+    return _show_all_roblox_windows(_SW_RESTORE)
 
 
 def _get_cursor_monitor_work_area() -> tuple[int, int, int, int]:

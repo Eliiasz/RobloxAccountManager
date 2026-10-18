@@ -1612,6 +1612,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if S.get("kill_all_hotkey_enabled", False):
             QTimer.singleShot(0, lambda: self._apply_kill_hotkey(show_error=False))
 
+        if S.get("window_keys_enabled", False):
+            QTimer.singleShot(0, lambda: self._apply_window_keys(show_error=False))
+
         if roblox_settings_mod.has_startup_customizations():
             QTimer.singleShot(0, self._start_roblox_auto_apply)
 
@@ -5134,6 +5137,46 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         kill_note.setStyleSheet(f"color: {NOTE}; font-size: 10px;")
         f.addWidget(kill_note)
 
+        f.addWidget(_sec("WINDOW SHORTCUTS"))
+        self._sett_winkeys_chk = _chk(
+            "window_keys_enabled", "Enable Minimize / Restore shortcuts",
+            "Press the keys below anywhere (even inside Roblox) to minimize or bring back\n"
+            "every Roblox window at once.",
+            on_change=self._on_sett_window_keys_enabled,
+        )
+        f.addWidget(self._sett_winkeys_chk)
+        self._sett_winkey_btns = {}
+        for setting_key, label, default in (
+            ("minimize_all_hotkey", "Minimize all Roblox", window_grid_mod.DEFAULT_MINIMIZE_HOTKEY),
+            ("restore_all_hotkey", "Restore all Roblox", window_grid_mod.DEFAULT_RESTORE_HOTKEY),
+        ):
+            row = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+            row.addWidget(lbl)
+            row.addStretch(1)
+            btn = _HotkeyCaptureButton(str(S.get(setting_key, default) or default))
+            btn.setFixedWidth(150)
+            btn.setEnabled(bool(S.get("window_keys_enabled", False)))
+            btn.setToolTip("Click, then press the key you want. Escape cancels.")
+            btn.recording_started.connect(self._unregister_window_keys)
+            btn.recording_canceled.connect(
+                lambda b=btn: (self._apply_window_keys(show_error=False), b.clearFocus())
+            )
+            btn.sequence_changed.connect(
+                lambda seq, k=setting_key, b=btn: self._on_sett_window_key_changed(k, seq, b)
+            )
+            row.addWidget(btn)
+            f.addLayout(row)
+            self._sett_winkey_btns[setting_key] = btn
+        winkeys_note = QLabel(
+            "While on, these keys are taken over everywhere (e.g. F11 won't switch fullscreen). "
+            "Windows hidden by the Headless Manager stay hidden. F12 can't be used: Windows reserves it."
+        )
+        winkeys_note.setWordWrap(True)
+        winkeys_note.setStyleSheet(f"color: {NOTE}; font-size: 10px;")
+        f.addWidget(winkeys_note)
+
         f.addWidget(_sec("FIXES"))
         self._sett_installer_fix_chk = _chk(
             "roblox_installer_fix", "Roblox Installer Fix",
@@ -5739,6 +5782,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         restore_kill = bool(getattr(self, "_kill_hotkey_hwnd", 0))
         if restore_kill:
             self._unregister_kill_hotkey()
+        restore_winkeys = bool(getattr(self, "_window_keys_hwnd", 0))
+        if restore_winkeys:
+            self._unregister_window_keys()
         self.hide()
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
         self.show()
@@ -5762,6 +5808,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
         if restore_kill:
             QTimer.singleShot(0, lambda: self._apply_kill_hotkey(show_error=False))
+        if restore_winkeys:
+            QTimer.singleShot(0, lambda: self._apply_window_keys(show_error=False))
         print(f"[INFO] Always on Top {'enabled' if enabled else 'disabled'}")
 
     def _on_sett_multi_select(self, enabled: bool):
@@ -6278,6 +6326,63 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         self._roblox_settings_auto_apply_chk.blockSignals(False)
         self._update_roblox_settings_apply_state()
+
+    _WINDOW_KEY_SPECS = (
+        ("minimize_all_hotkey", "MINIMIZE_ALL_HOTKEY_ID", "DEFAULT_MINIMIZE_HOTKEY"),
+        ("restore_all_hotkey", "RESTORE_ALL_HOTKEY_ID", "DEFAULT_RESTORE_HOTKEY"),
+    )
+
+    def _unregister_window_keys(self) -> None:
+        hwnd = getattr(self, "_window_keys_hwnd", 0)
+        if hwnd:
+            for _key, id_name, _default in self._WINDOW_KEY_SPECS:
+                window_grid_mod.unregister_hotkey(hwnd, getattr(window_grid_mod, id_name))
+        self._window_keys_hwnd = 0
+
+    def _apply_window_keys(self, show_error: bool = True) -> bool:
+        self._unregister_window_keys()
+        settings = actions.load_ui_settings()
+        if not settings.get("window_keys_enabled", False):
+            return False
+        window_handle = int(self.winId())
+        failed = []
+        for setting_key, id_name, default_name in self._WINDOW_KEY_SPECS:
+            default = getattr(window_grid_mod, default_name)
+            sequence = str(settings.get(setting_key, default) or default)
+            result = window_grid_mod.register_hotkey(
+                window_handle, sequence, getattr(window_grid_mod, id_name)
+            )
+            if result:
+                print(f"[INFO] Shortcut {sequence}: {setting_key.replace('_hotkey', '').replace('_', ' ')}")
+            else:
+                failed.append(f"{sequence}: {result.message}")
+        self._window_keys_hwnd = window_handle
+        if failed:
+            print("[WARNING] Some window shortcuts could not be registered: " + "; ".join(failed))
+            if show_error:
+                _show_error(
+                    self, "Shortcut Not Available",
+                    "These keys could not be used:\n\n" + "\n".join(
+                        line.replace("Window Grid", "this").replace(window_grid_mod.DEFAULT_HOTKEY, "its previous value")
+                        for line in failed
+                    ),
+                )
+        return not failed
+
+    def _on_sett_window_keys_enabled(self, enabled: bool) -> None:
+        for btn in getattr(self, "_sett_winkey_btns", {}).values():
+            if isValid(btn):
+                btn.setEnabled(bool(enabled))
+        if enabled:
+            self._apply_window_keys()
+        else:
+            self._unregister_window_keys()
+
+    def _on_sett_window_key_changed(self, setting_key: str, sequence: str, btn) -> None:
+        if isValid(btn):
+            QTimer.singleShot(0, btn.clearFocus)
+        actions.save_ui_setting(setting_key, sequence)
+        self._apply_window_keys()
 
     def _unregister_kill_hotkey(self) -> None:
         hwnd = getattr(self, "_kill_hotkey_hwnd", 0)
@@ -7928,6 +8033,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if window_grid_mod.is_hotkey_message(message, window_grid_mod.KILL_ALL_HOTKEY_ID):
             self._on_kill_all_roblox()
             return True, 0
+        if window_grid_mod.is_hotkey_message(message, window_grid_mod.MINIMIZE_ALL_HOTKEY_ID):
+            print(f"[INFO] Minimized {window_grid_mod.minimize_roblox_windows()} Roblox window(s)")
+            return True, 0
+        if window_grid_mod.is_hotkey_message(message, window_grid_mod.RESTORE_ALL_HOTKEY_ID):
+            print(f"[INFO] Restored {window_grid_mod.restore_roblox_windows()} Roblox window(s)")
+            return True, 0
         if window_grid_mod.is_hotkey_message(message):
             result = window_grid_mod.tile_roblox_windows()
             if not result:
@@ -8097,6 +8208,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             pass
         try:
             self._unregister_kill_hotkey()
+        except Exception:
+            pass
+        try:
+            self._unregister_window_keys()
         except Exception:
             pass
         try:
