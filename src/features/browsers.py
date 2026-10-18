@@ -37,6 +37,7 @@ SUPPORTED_BROWSERS = (
     ("firefox", "Mozilla Firefox"),
     ("edge", "Microsoft Edge"),
     ("chromium", "Chromium"),
+    ("brave", "Brave"),
 )
 
 
@@ -68,6 +69,14 @@ def _standard_paths(browser_type: str) -> list[str]:
             os.path.join(local_appdata, relative),
         ]
         path_names = ("msedge.exe", "msedge")
+    elif browser_type == "brave":
+        relative = os.path.join("BraveSoftware", "Brave-Browser", "Application", "brave.exe")
+        candidates = [
+            os.path.join(program_files, relative),
+            os.path.join(program_files_x86, relative),
+            os.path.join(local_appdata, relative),
+        ]
+        path_names = ("brave.exe", "brave")
     else:
         return []
 
@@ -90,7 +99,7 @@ def _missing_result(browser_type: str, checked_paths: list[str]) -> OperationRes
             f"{label} could not be found. Select another browser or use the built-in "
             "Chromium under Settings -> Misc."
             if browser_type in labels
-            else "Select Chrome, Firefox, Edge, or Chromium in Browser Engine settings."
+            else "Select Chrome, Firefox, Edge, Chromium, or Brave in Browser Engine settings."
         ),
         detail=(
             "No registry or default-browser lookup was used. Checked paths:\n"
@@ -123,7 +132,8 @@ def resolve_browser(browser_type: str) -> OperationResult:
     checked_paths = _standard_paths(selected)
     for candidate in checked_paths:
         if os.path.isfile(candidate):
-            driver_type = "firefox" if selected == "firefox" else selected
+            # Brave is Chromium-based and runs through the Chrome driver.
+            driver_type = {"firefox": "firefox", "brave": "chrome"}.get(selected, selected)
             return OperationResult.success(data={
                 "browser": BrowserDescriptor(
                     key=selected,

@@ -440,7 +440,7 @@ class RobloxAccountManager:
                 options.add_argument(profile_dir)
                 options.set_preference("dom.webdriver.enabled", False)
                 options.set_preference("useAutomationExtension", False)
-            elif browser_key in ("chrome", "chromium"):
+            elif browser_key in ("chrome", "chromium", "brave"):
                 from selenium.webdriver.chrome.options import Options
 
                 options = Options()
