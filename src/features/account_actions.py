@@ -16,6 +16,7 @@ import tempfile
 import shutil
 import zipfile
 import subprocess
+import psutil
 import win32api
 import win32con
 import win32gui
@@ -924,6 +925,65 @@ def add_account_browser(manager, on_done: Callable[[bool, str], None] = lambda *
             print(f"[ERROR] add_account_browser: {exc}")
             on_done(False, unexpected_result("Adding account through browser", exc))
     threading.Thread(target=_worker, daemon=True, name="add-account-browser").start()
+
+# Quick Sign-in: opens the Roblox login page and presses its "Quick Sign-in"
+# (sign in with another device) button, so only the code has to be entered on
+# a phone or other device where the account is already signed in.
+QUICK_SIGN_IN_SCRIPT = r"""
+(function () {
+    var QUICK = /(quick\s*(sign|log)\s*-?\s*in)|(another\s+device)/i;
+    var MORE = /(other\s+(login|sign\s*-?\s*in)\s+(methods|options))|(more\s+(login|sign\s*-?\s*in)\s+options)/i;
+    var tries = 0;
+    var expanded = false;
+    function visible(el) {
+        if (!el) return false;
+        var r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }
+    function findQuick() {
+        var ids = ["#cross-device-login-button", "[id*='cross-device']", "[id*='crossDevice']", "[id*='quick-login']", "[id*='quickLogin']"];
+        for (var i = 0; i < ids.length; i++) {
+            var el = document.querySelector(ids[i]);
+            if (visible(el)) return el;
+        }
+        var nodes = document.querySelectorAll("button, a, [role='button']");
+        for (var j = 0; j < nodes.length; j++) {
+            var text = (nodes[j].innerText || nodes[j].textContent || "").trim();
+            if (QUICK.test(text) && visible(nodes[j])) return nodes[j];
+        }
+        return null;
+    }
+    function findMore() {
+        var nodes = document.querySelectorAll("button, a, [role='button']");
+        for (var j = 0; j < nodes.length; j++) {
+            var text = (nodes[j].innerText || nodes[j].textContent || "").trim();
+            if (MORE.test(text) && visible(nodes[j])) return nodes[j];
+        }
+        return null;
+    }
+    var timer = setInterval(function () {
+        tries += 1;
+        var quick = findQuick();
+        if (quick) {
+            clearInterval(timer);
+            quick.click();
+            return;
+        }
+        if (!expanded && tries >= 4) {
+            var more = findMore();
+            if (more) { expanded = true; more.click(); }
+        }
+        if (tries > 80) clearInterval(timer);
+    }, 500);
+})();
+"""
+
+
+def add_account_quick_sign_in(manager, on_done: Callable[[bool, str], None] = lambda *_: None) -> None:
+    """Browser login that jumps straight to Roblox Quick Sign-in."""
+    print("[INFO] Quick Sign-in: opening the login page, enter the code on your other device.")
+    add_account_browser(manager, on_done=on_done, javascript=QUICK_SIGN_IN_SCRIPT)
+
 
 # Anti-AFK
 _afk_thread: threading.Thread | None = None
@@ -2197,6 +2257,93 @@ def kill_roblox() -> OperationResult:
     except Exception as e:
         print(f"[Multi Roblox] Error closing Roblox processes: {e}")
         return unexpected_result("Closing Roblox processes", e)
+
+_KILL_PROCESS_NAMES = frozenset({
+    "robloxplayerbeta.exe",
+    "robloxplayerlauncher.exe",
+    "robloxcrashhandler.exe",
+})
+
+
+def kill_all_roblox_fast() -> OperationResult:
+    """Terminate every Roblox player process at once.
+
+    Uses TerminateProcess on all matches in one pass (no per-process
+    taskkill), waits briefly, then falls back to a single taskkill /IM for
+    anything that survived. Safe to call from a worker thread.
+    """
+    started = time.monotonic()
+    targets: list[psutil.Process] = []
+    try:
+        for process in psutil.process_iter(["pid", "name"]):
+            try:
+                if (process.info.get("name") or "").lower() in _KILL_PROCESS_NAMES:
+                    targets.append(process)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as exc:
+        return unexpected_result("Finding Roblox processes", exc)
+
+    games = sum(1 for p in targets if (p.info.get("name") or "").lower() == "robloxplayerbeta.exe")
+    if not targets:
+        return OperationResult.success(
+            "No Roblox running.", data={"closed": 0, "games": 0, "remaining": 0}
+        )
+
+    for process in targets:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            pass
+        except (psutil.AccessDenied, OSError):
+            pass
+
+    try:
+        _gone, alive = psutil.wait_procs(targets, timeout=2.0)
+    except Exception:
+        alive = [p for p in targets if p.is_running()]
+
+    if alive:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/IM", "RobloxPlayerBeta.exe"],
+                capture_output=True, timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            pass
+        alive = [p for p in alive if _still_running(p)]
+
+    try:
+        presence_mod.get_roblox_processes(force=True)  # refresh shared cache
+    except Exception:
+        pass
+
+    elapsed = time.monotonic() - started
+    print(
+        f"[INFO] Kill All Roblox: closed {len(targets) - len(alive)}/{len(targets)} "
+        f"process(es) ({games} game window(s)) in {elapsed:.1f}s"
+    )
+    if alive:
+        return OperationResult.failure(
+            "ROBLOX_PROCESS_KILL_FAILED",
+            "Some Roblox Processes Could Not Be Closed",
+            f"{len(alive)} Roblox process(es) are still running.",
+            detail="\n".join(f"PID {p.pid}" for p in alive),
+            retryable=True,
+        )
+    return OperationResult.success(
+        f"Closed {games} Roblox window(s).",
+        data={"closed": len(targets), "games": games, "remaining": 0},
+    )
+
+
+def _still_running(process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
+
 
 def disable_multi_roblox():
     global _mr_handle, _mr_h64_monitoring, _mr_h64_thread, _mr_h64_path

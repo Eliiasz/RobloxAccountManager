@@ -30,7 +30,11 @@ SETTINGS_KEY = "proxy"
 MODE_GATEWAY = "gateway"  # one endpoint, the provider rotates the IP
 MODE_LIST = "list"        # several proxies, this app rotates between them
 
-SCHEMES = ("socks5h", "socks5", "http", "https")
+SCHEMES = ("socks5h", "socks5", "socks4a", "socks4", "http", "https")
+_SCHEME_ALIASES = {
+    "socks": "socks5h", "socks5h": "socks5h", "socks5": "socks5",
+    "socks4a": "socks4a", "socks4": "socks4", "http": "http", "https": "https",
+}
 _ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
 _NO_PROXY_HOSTS = ("localhost", "127.0.0.1", "::1")
 _IP_CHECK_URL = "https://api.ipify.org?format=json"
@@ -57,48 +61,100 @@ def socks_available() -> bool:
         return False
 
 
-def normalize_proxy(text: str, default_scheme: str = "socks5h") -> str:
-    """Turn the common proxy formats into a URL requests understands.
+def _valid_port(value: str) -> bool:
+    return value.isdigit() and 0 < int(value) < 65536
 
-    Accepted:
-        scheme://user:pass@host:port   scheme://host:port
-        user:pass@host:port            host:port
-        host:port:user:pass
-    Lines without a scheme use ``default_scheme``.
-    Returns "" for blank or unreadable input.
+
+def _looks_like_host(value: str) -> bool:
+    value = value.strip("[]")
+    if not value or " " in value:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9.\-_:]+", value)) and ("." in value or ":" in value or value == "localhost")
+
+
+def _split_host_port(value: str) -> tuple[str, str] | None:
+    value = value.strip().rstrip("/")
+    if value.startswith("["):  # [IPv6]:port
+        host, sep, rest = value[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+        return (f"[{host}]", port) if sep and _valid_port(port) else None
+    host, sep, port = value.rpartition(":")
+    if sep and host and _valid_port(port) and _looks_like_host(host):
+        return host, port
+    return None
+
+
+def normalize_proxy(text: str, default_scheme: str = "socks5h") -> str:
+    """Turn any common proxy notation into a URL requests understands.
+
+    Accepted (scheme optional on all of them; socks/socks5/socks5h/socks4/
+    socks4a/http/https):
+        scheme://user:pass@host:port     user:pass@host:port
+        host:port@user:pass               host:port:user:pass
+        user:pass:host:port               host:port
+        host port user pass               host:port user:pass   (spaces/tabs/commas)
+        [IPv6]:port forms of the above
+    Passwords may contain ":" and "@" in the host:port:user:pass form.
+    Lines without a scheme use ``default_scheme``. Returns "" when unreadable.
     """
-    text = (text or "").strip()
-    if not text or text.startswith("#"):
+    text = (text or "").strip().strip("\ufeff").strip()
+    if not text or text.startswith("#") or text.startswith("//"):
         return ""
-    if default_scheme not in SCHEMES:
-        default_scheme = "socks5h"
+    default_scheme = _SCHEME_ALIASES.get((default_scheme or "").lower(), "socks5h")
 
     scheme = default_scheme
     match = re.match(r"^([a-zA-Z0-9]+)://(.*)$", text)
     if match:
-        scheme = match.group(1).lower()
-        text = match.group(2)
-        if scheme == "socks":
-            scheme = "socks5h"
-        if scheme not in SCHEMES:
+        scheme = _SCHEME_ALIASES.get(match.group(1).lower(), "")
+        if not scheme:
             return ""
+        text = match.group(2).strip()
+    text = text.rstrip("/")
+
+    # Whitespace / comma / semicolon / pipe separated fields.
+    fields = [f for f in re.split(r"[\s,;|]+", text) if f]
+    if len(fields) > 1:
+        if len(fields) == 4 and _valid_port(fields[1]):            # host port user pass
+            text = f"{fields[0]}:{fields[1]}:{fields[2]}:{fields[3]}"
+        elif len(fields) == 2 and _valid_port(fields[1]):          # host port
+            text = f"{fields[0]}:{fields[1]}"
+        elif len(fields) == 2:                                    # host:port user:pass (either order)
+            first, second = fields
+            if _split_host_port(first):
+                text = f"{second}@{first}"
+            elif _split_host_port(second):
+                text = f"{first}@{second}"
 
     user = password = None
-    parts = text.split(":", 3)
-    if len(parts) == 4 and parts[1].isdigit() and "@" not in parts[0]:
-        # host:port:user:pass (the password may contain ":" or "@")
-        hostport = f"{parts[0]}:{parts[1]}"
-        user, password = parts[2], parts[3]
-    elif "@" in text:
-        creds, _, hostport = text.rpartition("@")
-        user, _, password = creds.partition(":")
-    else:
-        hostport = text
+    hostport = None
 
-    host, _, port = hostport.rpartition(":")
-    if not host or not port.isdigit() or not (0 < int(port) < 65536):
+    if "@" in text:
+        left, _, right = text.rpartition("@")
+        if _split_host_port(right):                               # user:pass@host:port
+            hostport = _split_host_port(right)
+            user, _, password = left.partition(":")
+        else:
+            left2, _, right2 = text.partition("@")
+            if _split_host_port(left2):                           # host:port@user:pass
+                hostport = _split_host_port(left2)
+                user, _, password = right2.partition(":")
+
+    if hostport is None:
+        parts = text.split(":")
+        if text.startswith("["):
+            hostport = _split_host_port(text)
+        elif len(parts) == 2:
+            hostport = _split_host_port(text)
+        elif len(parts) >= 4 and _valid_port(parts[1]) and _looks_like_host(parts[0]):
+            hostport = (parts[0], parts[1])                       # host:port:user:pass
+            user, password = parts[2], ":".join(parts[3:])
+        elif len(parts) == 4 and _valid_port(parts[3]) and _looks_like_host(parts[2]):
+            hostport = (parts[2], parts[3])                       # user:pass:host:port
+            user, password = parts[0], parts[1]
+
+    if hostport is None:
         return ""
-
+    host, port = hostport
     auth = ""
     if user:
         auth = quote(unquote(user), safe="") + ":" + quote(unquote(password or ""), safe="") + "@"

@@ -12,6 +12,7 @@ import re
 import secrets
 import string
 import threading
+import time
 from typing import Callable
 
 from classes.operation_result import OperationResult, ensure_result
@@ -21,6 +22,7 @@ MAX_CREATOR_BROWSERS = 5
 MAX_CREATOR_ACCOUNTS = 100
 MAX_USERNAME_LENGTH = 20
 MAX_PREFIX_LENGTH = 14
+MAX_INTERVAL_SECONDS = 3600
 RANDOM_SUFFIX_LENGTH = 6
 _SIGNUP_URL = "https://www.roblox.com/CreateAccount"
 _MONTHS = (
@@ -294,6 +296,12 @@ def create_accounts(
         return
     settings["password"] = custom_password
 
+    try:
+        interval = float(settings.get("interval_seconds", 0) or 0)
+    except (TypeError, ValueError):
+        interval = 0.0
+    interval = max(0.0, min(float(MAX_INTERVAL_SECONDS), interval))
+
     browser_result = get_browser_result()
     if not browser_result:
         on_done(
@@ -318,6 +326,25 @@ def create_accounts(
             for index, profile in enumerate(profiles):
                 pending_profiles.put((index, profile))
 
+            # Each account start waits until `interval` seconds after the
+            # previous one started, across all browser slots.
+            start_gate = threading.Lock()
+            next_start = [0.0]
+
+            def _wait_for_turn(index: int) -> None:
+                if interval <= 0:
+                    return
+                with start_gate:
+                    now = time.monotonic()
+                    wait = next_start[0] - now
+                    if wait > 0:
+                        print(
+                            f"[Account Creator] Waiting {wait:.0f}s before "
+                            f"account {index + 1}/{requested_amount}."
+                        )
+                        time.sleep(wait)
+                    next_start[0] = time.monotonic() + interval
+
             def _browser_slot(slot_index: int):
                 while True:
                     try:
@@ -326,6 +353,7 @@ def create_accounts(
                         return
 
                     try:
+                        _wait_for_turn(index)
                         print(
                             f"[Account Creator] Slot {slot_index + 1} starting "
                             f"account {index + 1}/{requested_amount}."

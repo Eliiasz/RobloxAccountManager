@@ -384,6 +384,7 @@ class _Bridge(QObject):
     proxy_test_done = Signal(bool, str) # (success, message) from proxy test worker
     ban_check_result = Signal(object, int, int) # (HealthResult, index, total) from ban check worker
     ban_check_done = Signal(object) # summary dict from ban check worker
+    kill_roblox_done = Signal(object) # OperationResult from Kill All Roblox worker
 
 
 SKIPPED_UPDATE_SETTING = "skipped_update_version"
@@ -1422,13 +1423,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             4: "Settings",
             5: "Console",
             6: "Donations",
-            8: "Proxy",
-            9: "Ban Check",
+            8: "Ban Check",
         }
         self._window_grid_hotkey_registered = False
         self._window_grid_hotkey_hwnd = 0
         self._diagnostics_heartbeat = QTimer(self)
-        self._diagnostics_heartbeat.setInterval(5000)
+        self._diagnostics_heartbeat.setInterval(1000)
         self._diagnostics_heartbeat.timeout.connect(diagnostics.pulse_ui)
         self._diagnostics_heartbeat.start()
 
@@ -1456,6 +1456,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge.proxy_test_done.connect(self._on_proxy_test_done)
         self._bridge.ban_check_result.connect(self._on_ban_check_result)
         self._bridge.ban_check_done.connect(self._on_ban_check_done)
+        self._bridge.kill_roblox_done.connect(self._on_kill_roblox_done)
         self._bridge.account_creator_done.connect(self._on_account_creator_done)
         self._bridge.launch_done.connect(self._on_launch_and_refresh)
         self._bridge.avatar_ready.connect(self._on_avatar_ready)
@@ -1899,7 +1900,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         outer.addWidget(self._build_title_bar())
 
         self._page_stack = QStackedWidget()
-        self._built_pages = {0, 1, 2, 3, 7, 8, 9}
+        self._built_pages = {0, 1, 2, 3, 7, 8}
         self._lazy_page_builders = {
             4: self._build_settings_panel,
             5: self._build_console_panel,
@@ -1938,8 +1939,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         for index, page_name in self._page_names.items():
             if index > 7:
                 _add_page_host(index, page_name)
-        self._page_hosts[8].set_page(self._build_proxy_panel())
-        self._page_hosts[9].set_page(self._build_ban_check_panel())
+        self._page_hosts[8].set_page(self._build_ban_check_panel())
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -2208,9 +2208,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Multi Roblox":3,
             "Settings":    4,
             "Console":     5,
+            "Ban Check":   8,
             "Donations":   6,
-            "Proxy":       8,
-            "Ban Check":   9,
         }
 
         self._normal_nav_btns: list[QPushButton] = []
@@ -2227,9 +2226,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             ("Multi Roblox", False),
             ("Settings", False),
             ("Console", False),
-            ("Donations", False),
-            ("Proxy", False),
             ("Ban Check", False),
+            ("Donations", False),
         ]:
             btn = QPushButton(label)
             btn.setObjectName("navTab")
@@ -2272,7 +2270,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         lay.addStretch(1)
 
         kill_roblox_button = QPushButton("Kill All Roblox")
-        kill_roblox_button.setToolTip("Close every running Roblox process")
+        kill_roblox_button.setToolTip("Instantly close every running Roblox window (no confirmation)")
+        self._kill_roblox_btn = kill_roblox_button
         icons.set_button_icon(kill_roblox_button, "power", _THEME)
         kill_roblox_button.clicked.connect(self._on_kill_all_roblox)
         lay.addWidget(kill_roblox_button)
@@ -2590,6 +2589,18 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         # Dropdown menu for add button
         add_menu = QMenu(self._add_btn)
+        add_menu.addSection("Sign In")
+        act_browser = add_menu.addAction("Browser Login")
+        act_browser.setToolTip("Open the login page and sign in normally")
+        act_quick = add_menu.addAction("Quick Sign-in (code)")
+        act_quick.setToolTip(
+            "Opens the login page and starts Quick Sign-in for you.\n"
+            "Enter the code shown in the browser on a device where you are already signed in."
+        )
+        act_browser.triggered.connect(self._on_add_account_browser)
+        act_quick.triggered.connect(self._on_add_account_quick)
+        add_menu.setToolTipsVisible(True)
+        add_menu.addSection("Import / Create")
         act_cookie = add_menu.addAction("Import Cookie")
         act_userpass = add_menu.addAction("Import User:Pass")
         act_creator = add_menu.addAction("Account Creator")
@@ -3388,12 +3399,23 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._proxy_scheme_combo = QComboBox()
         self._proxy_scheme_combo.addItem("SOCKS5 (remote DNS)", "socks5h")
         self._proxy_scheme_combo.addItem("SOCKS5 (local DNS)", "socks5")
+        self._proxy_scheme_combo.addItem("SOCKS4", "socks4")
         self._proxy_scheme_combo.addItem("HTTP", "http")
+        self._proxy_scheme_combo.addItem("HTTPS", "https")
         self._proxy_scheme_combo.setToolTip("Used for entries written without socks5:// or http://")
         self._proxy_scheme_combo.setFixedWidth(170)
         type_row.addWidget(self._proxy_scheme_combo)
         type_row.addStretch(1)
         lay.addLayout(type_row)
+
+        formats = QLabel(
+            "Any format works: host:port · host:port:user:pass · user:pass@host:port · "
+            "host:port@user:pass · user:pass:host:port · \"host port user pass\" · "
+            "with or without socks5:// socks4:// http:// https://"
+        )
+        formats.setWordWrap(True)
+        formats.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        lay.addWidget(formats)
 
         # Gateway
         self._proxy_gateway_box = QWidget()
@@ -3854,7 +3876,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 if reply == QMessageBox.StandardButton.Yes:
-                    actions.kill_roblox()
+                    actions.kill_all_roblox_fast()
                     self._wait_for_roblox_exit(3.0, self._finish_start_multi_roblox)
                     return
                 else:
@@ -4031,7 +4053,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         content_stack = QStackedWidget()
         content_stack.setStyleSheet("background: transparent;")
 
-        CATEGORIES = ["General", "Roblox", "Themes", "Misc", "Developer"]
+        CATEGORIES = ["General", "Roblox", "Themes", "Misc", "Proxy", "Developer"]
         cat_buttons: list[QPushButton] = []
 
         def _switch_cat(idx: int):
@@ -5000,7 +5022,18 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         f.addStretch(1)
 
-        # Developer (Page 5)
+        # Proxy (Page 5)
+        _proxy_sa = QScrollArea()
+        _proxy_sa.setWidgetResizable(True)
+        _proxy_sa.setFrameShape(QFrame.Shape.NoFrame)
+        _proxy_sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _proxy_sa.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        _proxy_panel = self._build_proxy_panel()
+        _proxy_panel.setStyleSheet("QFrame#centerPanel { background: transparent; }")
+        _proxy_sa.setWidget(_proxy_panel)
+        content_stack.addWidget(_proxy_sa)
+
+        # Developer (Page 6)
         sa, f = _scrollable()
         content_stack.addWidget(sa)
 
@@ -5782,6 +5815,16 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._refresh_headless_list(rows)
 
     def _refresh_headless_list(self, rows: list[dict]):
+        # The scan repeats every few seconds; rebuilding every row widget (and
+        # re-requesting avatars) when nothing changed is what makes the window
+        # sluggish with many Roblox clients open.
+        signature = (
+            bool(self._headless_manager),
+            tuple((r.get("pid"), r.get("username"), r.get("hidden")) for r in rows),
+        )
+        if signature == getattr(self, "_headless_list_signature", None) and self._headless_list.count():
+            return
+        self._headless_list_signature = signature
         cur = self._headless_selected_pid()
         selected = set(self._headless_selected_pids())
         self._headless_list.clear()
@@ -8199,6 +8242,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             on_done=self._on_add_done,
         )
 
+    def _on_add_account_quick(self):
+        actions.add_account_quick_sign_in(
+            self.manager,
+            on_done=self._on_add_done,
+        )
+
     def _on_import_cookie(self):
         dlg = _ImportCookieDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.cookie_value:
@@ -8542,33 +8591,33 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
 
     def _on_kill_all_roblox(self):
-        if not actions.is_roblox_running():
-            _show_info(
-                self,
-                "Roblox Processes",
-                "No Roblox processes were found.",
-            )
+        # Instant: no confirmation, runs off the UI thread, result shown on the button.
+        if getattr(self, "_kill_in_progress", False):
             return
+        self._kill_in_progress = True
+        btn = self._kill_roblox_btn
+        btn.setEnabled(False)
+        btn.setText("Killing...")
 
-        reply = QMessageBox.question(
-            self,
-            "Kill Roblox Processes",
-            "Close every running Roblox process?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        def _worker():
+            result = actions.kill_all_roblox_fast()
+            self._bridge.kill_roblox_done.emit(result)
+
+        threading.Thread(target=_worker, daemon=True, name="KillAllRoblox").start()
+
+    def _on_kill_roblox_done(self, result) -> None:
+        self._kill_in_progress = False
+        btn = self._kill_roblox_btn
+        if not isValid(btn):
             return
-
-        result = actions.kill_roblox()
         if result:
-            _show_info(
-                self,
-                "Roblox Processes Closed",
-                result.message,
-            )
+            games = (result.data or {}).get("games", 0) if hasattr(result, "data") else 0
+            btn.setText(f"Killed {games}" if games else "None running")
         else:
-            self._show_operation_error(result)
+            btn.setText("Some left!")
+            print(f"[WARNING] {result.message} {getattr(result, 'detail', '')}")
+        btn.setEnabled(True)
+        QTimer.singleShot(1800, lambda: isValid(btn) and btn.setText("Kill All Roblox"))
 
     def _emit_launch_done(self, success: bool, result):
         if isinstance(result, OperationResult):
@@ -8958,6 +9007,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._console_view = QTextEdit()
         self._console_view.setReadOnly(True)
         self._console_view.document().setMaximumBlockCount(3000)
+        # Read-only log: keeping undo history for every line only costs memory and time.
+        self._console_view.document().setUndoRedoEnabled(False)
         self._console_view.setStyleSheet(
             f"QTextEdit {{"
             f"  background: {INPUT};"
@@ -9360,7 +9411,7 @@ class _AccountCreatorDialog(QDialog):
         self.amount = 1
         self.options: dict = {}
         self.setWindowTitle("Account Creator")
-        self.setFixedSize(540, 320)
+        self.setFixedSize(540, 340)
         self.setStyleSheet(_DLG_STYLE + f"""
             QTabWidget::pane {{
                 background: {PANEL};
@@ -9422,13 +9473,44 @@ class _AccountCreatorDialog(QDialog):
         )
         amount_row.addWidget(amount_label)
         amount_row.addStretch(1)
+        _spin_style = (
+            f"QSpinBox {{ background: {INPUT}; color: {TEXT}; border: 1px solid {LINE};"
+            f" border-radius: 0; padding: 2px 6px; font-size: 12px; }}"
+        )
         self._amount_spin = QSpinBox()
         self._amount_spin.setRange(1, account_creator_mod.MAX_CREATOR_ACCOUNTS)
-        self._amount_spin.setValue(1)
-        self._amount_spin.setFixedWidth(70)
-        self._amount_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self._amount_spin.setValue(int(actions.get_ui_setting("creator_amount", 1) or 1))
+        self._amount_spin.setFixedSize(90, 28)
+        self._amount_spin.setStyleSheet(_spin_style)
+        self._amount_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         amount_row.addWidget(self._amount_spin)
         basic_lay.addLayout(amount_row)
+
+        interval_row = QHBoxLayout()
+        interval_label = QLabel("Wait Between Accounts")
+        interval_label.setToolTip(
+            "Seconds to wait before starting each next account.\n"
+            "0 = start them as fast as possible."
+        )
+        interval_row.addWidget(interval_label)
+        interval_row.addStretch(1)
+        self._interval_spin = QSpinBox()
+        self._interval_spin.setRange(0, account_creator_mod.MAX_INTERVAL_SECONDS)
+        self._interval_spin.setValue(int(actions.get_ui_setting("creator_interval_seconds", 0) or 0))
+        self._interval_spin.setSuffix(" sec")
+        self._interval_spin.setFixedSize(90, 28)
+        self._interval_spin.setStyleSheet(_spin_style)
+        self._interval_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        interval_row.addWidget(self._interval_spin)
+        basic_lay.addLayout(interval_row)
+
+        basic_hint = QLabel(
+            "Up to 5 browsers open at once. With a wait set, each new account "
+            "starts that many seconds after the previous one."
+        )
+        basic_hint.setWordWrap(True)
+        basic_hint.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        basic_lay.addWidget(basic_hint)
         basic_lay.addStretch(1)
         tabs.addTab(basic_page, "Basic")
 
@@ -9523,10 +9605,13 @@ class _AccountCreatorDialog(QDialog):
             return
 
         self.amount = self._amount_spin.value()
+        actions.save_ui_setting("creator_amount", self.amount)
+        actions.save_ui_setting("creator_interval_seconds", self._interval_spin.value())
         self.options = {
             "enable_custom_prefix": enable_custom_prefix,
             "prefix": prefix,
             "password": password,
+            "interval_seconds": self._interval_spin.value(),
         }
         self.accept()
 

@@ -133,7 +133,9 @@ def _session_active(session):
 def _snapshot():
     return {
         (pid, created): process
-        for pid, (created, process) in presence.get_roblox_processes(force=True).items()
+        # Polled every 0.2s while a launch is pending; a short cache stops each
+        # poll from walking every process on the PC.
+        for pid, (created, process) in presence.get_roblox_processes(max_age=0.5).items()
     }
 
 

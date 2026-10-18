@@ -213,6 +213,9 @@ def mark_ui_ready() -> None:
     set_startup_stage("UI ready")
 
 
+_STALL_REPORT_SECONDS = 6.0
+
+
 def pulse_ui() -> None:
     global _LAST_UI_HEARTBEAT
     _LAST_UI_HEARTBEAT = time.monotonic()
@@ -220,18 +223,19 @@ def pulse_ui() -> None:
 
 def _health_monitor() -> None:
     warned = False
-    while not _HEALTH_STOP.wait(5):
+    while not _HEALTH_STOP.wait(2):
         if not _UI_READY or not _LAST_UI_HEARTBEAT:
             continue
         stalled_for = time.monotonic() - _LAST_UI_HEARTBEAT
-        if stalled_for >= 30 and not warned:
+        # Windows shows "Not responding" after ~5s, so capture a report then.
+        if stalled_for >= _STALL_REPORT_SECONDS and not warned:
             report_ui_stall(stalled_for)
             record_message(
                 f"The UI event loop has not responded for {stalled_for:.1f} seconds.",
                 "WARNING",
             )
             warned = True
-        elif stalled_for < 15:
+        elif stalled_for < 3:
             warned = False
 
 
