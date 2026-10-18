@@ -2649,19 +2649,25 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Opens Roblox login and starts Quick Sign-in for you.\n"
             "Type the code it shows on a phone or PC where you're already signed in."
         )
-        quick_btn.setFixedHeight(26)
+        quick_btn.setFixedHeight(28)
         quick_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         quick_btn.setStyleSheet(
-            f"QPushButton {{ background: {INPUT}; border: 1px solid {LINE};"
-            f"  font-size: 11px; min-height: 26px; padding: 2px 8px;"
+            f"QPushButton {{ background: {ACCENT_SOFT}; border: 1px solid {ACCENT_BRIGHT};"
+            f"  font-size: 11px; font-weight: 700; min-height: 28px; padding: 2px 8px;"
             f"  text-align: center; color: {TEXT}; }}"
-            f"QPushButton:hover   {{ background: {SELECT}; }}"
-            f"QPushButton:pressed {{ background: {SELECT}; }}"
+            f"QPushButton:hover   {{ background: {ACCENT_HOVER}; }}"
+            f"QPushButton:pressed {{ background: {ACCENT_PRESSED}; }}"
         )
         quick_btn.clicked.connect(self._on_add_account_quick)
         self._quick_signin_btn = quick_btn
 
-        bottom.addWidget(quick_btn, 1)
+        # Quick Sign-in gets the full width on its own row so neither label is
+        # cut off; Add Account and Remove keep their original row below it.
+        quick_row = QHBoxLayout()
+        quick_row.setContentsMargins(0, 0, 0, 0)
+        quick_row.addWidget(quick_btn, 1)
+        lay.addLayout(quick_row)
+
         bottom.addWidget(self._add_btn, 1)
         bottom.addWidget(remove_btn)
         bottom.setAlignment(Qt.AlignmentFlag.AlignVCenter)
