@@ -33,7 +33,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction, QColor, QCursor, QFont, QIcon, QPainter, QPainterPath,
-    QImage, QImageReader, QKeySequence, QMovie, QPalette, QPixmap, QPolygon, QRegion, QShortcut, QTextCharFormat,
+    QImage, QImageReader, QIntValidator, QKeySequence, QMovie, QPalette, QPixmap, QPolygon, QRegion, QShortcut, QTextCharFormat,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
@@ -386,6 +386,7 @@ class _Bridge(QObject):
     ban_check_result = Signal(object, int, int) # (HealthResult, index, total) from ban check worker
     ban_check_done = Signal(object) # summary dict from ban check worker
     kill_roblox_done = Signal(object) # OperationResult from Kill All Roblox worker
+    queue_poll_done = Signal(int) # running Roblox client count for the batch queue
 
 
 SKIPPED_UPDATE_SETTING = "skipped_update_version"
@@ -3917,8 +3918,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         lay.addWidget(q_title)
         q_desc = QLabel(
             "Launch big selections a few at a time. Select all the accounts you want and press "
-            "Join / Launch: only the first batch opens. Press Kill All Roblox (or Next Batch) to "
-            "close them and open the next batch, until every account has had its turn."
+            "Join / Launch: only the first batch opens. As soon as all of its Roblox windows are "
+            "closed (Kill All Roblox, or closed any other way) the next batch opens by itself, "
+            "until every account has had its turn. Pause stops it from opening the next one."
         )
         q_desc.setWordWrap(True)
         q_desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
@@ -3936,25 +3938,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         q_lbl = QLabel("Accounts per batch:")
         q_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; min-width: 80px;")
         q_row.addWidget(q_lbl)
-        self._queue_size_spin = QSpinBox()
-        self._queue_size_spin.setRange(1, 100)
-        self._queue_size_spin.setValue(int(actions.get_ui_setting("mr_batch_size", 5) or 5))
-        self._queue_size_spin.setFixedWidth(60)
-        self._queue_size_spin.setStyleSheet(
-            f"QSpinBox {{ background: {INPUT}; border: 1px solid {LINE};"
-            f" color: {TEXT}; padding: 4px; border-radius: 3px; }}"
-        )
-        self._queue_size_spin.valueChanged.connect(
-            lambda v: actions.save_ui_setting("mr_batch_size", int(v))
-        )
-        q_row.addWidget(self._queue_size_spin)
-        self._queue_auto_chk = QCheckBox("Kill All opens the next batch")
-        self._queue_auto_chk.setChecked(bool(actions.get_ui_setting("mr_batch_auto_next", True)))
-        self._queue_auto_chk.toggled.connect(
-            lambda on: actions.save_ui_setting("mr_batch_auto_next", bool(on))
-        )
-        self._queue_auto_chk.setStyleSheet(f"QCheckBox {{ color: {MUTED}; font-size: 11px; }}")
-        q_row.addWidget(self._queue_auto_chk)
+        self._queue_size_edit = QLineEdit(str(int(actions.get_ui_setting("mr_batch_size", 5) or 5)))
+        self._queue_size_edit.setValidator(QIntValidator(1, 500, self._queue_size_edit))
+        self._queue_size_edit.setFixedSize(70, 28)
+        self._queue_size_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._queue_size_edit.setPlaceholderText("5")
+        self._queue_size_edit.setToolTip("Type how many accounts open per batch")
+        self._queue_size_edit.textChanged.connect(self._on_queue_size_changed)
+        q_row.addWidget(self._queue_size_edit)
         q_row.addStretch(1)
         lay.addLayout(q_row)
 
@@ -3966,11 +3957,16 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             f"QPushButton:disabled {{ color: {MUTED}; }}"
         )
         self._queue_next_btn = QPushButton("Next Batch")
-        self._queue_next_btn.setToolTip("Close running Roblox and open the next batch now")
+        self._queue_next_btn.setToolTip("Close running Roblox now and open the next batch (even when paused)")
         self._queue_next_btn.clicked.connect(self._on_queue_next_clicked)
+        self._queue_pause_btn = QPushButton("Pause")
+        self._queue_pause_btn.setToolTip(
+            "While paused, closing Roblox will NOT open the next batch.\nPress Resume to continue."
+        )
+        self._queue_pause_btn.clicked.connect(self._on_queue_pause_clicked)
         self._queue_stop_btn = QPushButton("Stop Queue")
         self._queue_stop_btn.clicked.connect(self._stop_launch_queue)
-        for b in (self._queue_next_btn, self._queue_stop_btn):
+        for b in (self._queue_next_btn, self._queue_pause_btn, self._queue_stop_btn):
             b.setFixedHeight(26)
             b.setStyleSheet(q_btn_style)
             q_btns.addWidget(b)
@@ -3990,6 +3986,27 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         return panel
 
     # Batch queue -----------------------------------------------------------
+    # A queue moves through: "starting" (batch sent, waiting for its clients to
+    # appear) -> "running" (clients seen) -> all clients gone -> next batch, or
+    # "waiting" when paused. A poll every 2 seconds counts Roblox clients on a
+    # worker thread, so the queue advances however the windows were closed.
+    _QUEUE_POLL_MS = 2000
+    _QUEUE_START_TIMEOUT = 180.0
+
+    def _queue_size(self) -> int:
+        try:
+            return max(1, int(self._queue_size_edit.text() or 0))
+        except (ValueError, AttributeError):
+            return 5
+
+    def _on_queue_size_changed(self, text: str) -> None:
+        try:
+            value = int(text)
+        except ValueError:
+            return
+        if value >= 1:
+            actions.save_ui_setting("mr_batch_size", value)
+
     def _queue_or_all(self, usernames: list[str], send_batch) -> list[str] | None:
         """Start a queue when it is enabled and the selection is bigger than a batch.
 
@@ -3997,7 +4014,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         """
         if not getattr(self, "_queue_enabled_chk", None) or not self._queue_enabled_chk.isChecked():
             return usernames
-        size = max(1, self._queue_size_spin.value())
+        size = self._queue_size()
         if len(usernames) <= size:
             return usernames
         batches = (len(usernames) + size - 1) // size
@@ -4008,32 +4025,117 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "batch": 1,
             "batches": batches,
             "total": len(usernames),
+            "paused": False,
+            "force": False,
+            "phase": "starting",
+            "phase_since": time.monotonic(),
+            "empty_polls": 0,
         }
         print(f"[INFO] Batch queue: {len(usernames)} accounts in {batches} batches of {size}. Starting batch 1.")
+        self._ensure_queue_timer()
         self._update_queue_status()
         return list(usernames[:size])
+
+    def _ensure_queue_timer(self) -> None:
+        timer = getattr(self, "_queue_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(self._QUEUE_POLL_MS)
+            timer.timeout.connect(self._poll_queue)
+            self._queue_timer = timer
+            self._bridge.queue_poll_done.connect(self._on_queue_poll)
+        if not timer.isActive():
+            timer.start()
+
+    def _poll_queue(self) -> None:
+        if not getattr(self, "_launch_queue", None):
+            self._queue_timer.stop()
+            return
+        if getattr(self, "_queue_polling", False):
+            return
+        self._queue_polling = True
+
+        def _worker():
+            try:
+                count = len(actions.presence_mod.get_roblox_processes(max_age=1.0))
+            except Exception:
+                count = -1
+            self._bridge.queue_poll_done.emit(count)
+
+        threading.Thread(target=_worker, daemon=True, name="QueuePoll").start()
+
+    def _on_queue_poll(self, count: int) -> None:
+        self._queue_polling = False
+        q = getattr(self, "_launch_queue", None)
+        if not q or count < 0:
+            return
+        now = time.monotonic()
+        if q["phase"] == "starting":
+            if count > 0:
+                q["phase"], q["phase_since"], q["empty_polls"] = "running", now, 0
+                self._update_queue_status()
+            elif now - q["phase_since"] > self._QUEUE_START_TIMEOUT:
+                q["paused"] = True
+                q["phase"], q["phase_since"] = "waiting", now
+                print(f"[WARNING] Batch queue: batch {q['batch']} did not start within "
+                      f"{self._QUEUE_START_TIMEOUT:.0f}s. Queue paused, press Resume or Next Batch.")
+                self._update_queue_status()
+            return
+        if q["phase"] == "running":
+            # Two empty polls in a row: avoids reacting to a client restarting.
+            q["empty_polls"] = q["empty_polls"] + 1 if count == 0 else 0
+            if q["empty_polls"] < 2:
+                return
+            q["phase"], q["phase_since"] = "waiting", now
+            print(f"[INFO] Batch queue: batch {q['batch']} closed.")
+            self._update_queue_status()
+        if q["phase"] == "waiting" and count == 0:
+            if not q["remaining"]:
+                self._finish_queue()
+            elif not q["paused"] or q["force"]:
+                self._launch_next_batch()
 
     def _launch_next_batch(self) -> None:
         q = getattr(self, "_launch_queue", None)
         if not q or not q["remaining"]:
-            self._launch_queue = None
-            self._update_queue_status()
+            self._finish_queue()
             return
         batch = q["remaining"][: q["size"]]
         q["remaining"] = q["remaining"][q["size"]:]
         q["batch"] += 1
+        q["force"] = False
+        q["phase"], q["phase_since"], q["empty_polls"] = "starting", time.monotonic(), 0
         print(f"[INFO] Batch queue: starting batch {q['batch']}/{q['batches']} ({len(batch)} accounts)")
         try:
             q["send"](batch)
         except Exception as exc:
             print(f"[ERROR] Batch queue could not launch the next batch: {exc}")
-        if not q["remaining"]:
-            print("[INFO] Batch queue: this is the last batch.")
+        self._update_queue_status()
+
+    def _finish_queue(self) -> None:
+        if getattr(self, "_launch_queue", None):
+            print("[INFO] Batch queue finished: every account has had its turn.")
+        self._launch_queue = None
         self._update_queue_status()
 
     def _on_queue_next_clicked(self) -> None:
-        self._queue_force_next = True
+        q = getattr(self, "_launch_queue", None)
+        if not q:
+            return
+        q["force"] = True
+        if q["phase"] != "waiting":
+            q["phase"], q["phase_since"] = "waiting", time.monotonic()
         self._on_kill_all_roblox()
+
+    def _on_queue_pause_clicked(self) -> None:
+        q = getattr(self, "_launch_queue", None)
+        if not q:
+            return
+        q["paused"] = not q["paused"]
+        print(f"[INFO] Batch queue {'paused' if q['paused'] else 'resumed'}.")
+        self._update_queue_status()
+        if not q["paused"]:
+            self._poll_queue()  # resume right away if everything is already closed
 
     def _stop_launch_queue(self) -> None:
         if getattr(self, "_launch_queue", None):
@@ -4047,14 +4149,28 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         nav = getattr(self, "_nav_queue_lbl", None)
         if q:
             waiting = len(q["remaining"])
-            text = f"Batch {q['batch']}/{q['batches']} running · {waiting} account{'s' if waiting != 1 else ''} waiting"
-            short = f"Batch {q['batch']}/{q['batches']}"
+            left = f"{waiting} account{'s' if waiting != 1 else ''} waiting"
+            if q["phase"] == "starting":
+                state = "starting"
+            elif q["phase"] == "running":
+                state = "running"
+            elif q["paused"]:
+                state = "closed, PAUSED (press Resume)"
+            else:
+                state = "closed, opening next…"
+            if q["paused"] and q["phase"] != "waiting":
+                state += " · paused"
+            text = f"Batch {q['batch']}/{q['batches']} {state} · {left}"
+            short = f"Batch {q['batch']}/{q['batches']}" + (" ⏸" if q["paused"] else "")
         else:
             text, short = "Queue: empty", ""
         if label is not None and isValid(label):
             label.setText(text)
-            label.setStyleSheet(f"color: {ACCENT_BRIGHT if q else MUTED}; font-size: 11px;")
+            color = "#e0a85c" if q and q["paused"] else (ACCENT_BRIGHT if q else MUTED)
+            label.setStyleSheet(f"color: {color}; font-size: 11px;")
             self._queue_next_btn.setEnabled(bool(q and q["remaining"]))
+            self._queue_pause_btn.setEnabled(bool(q))
+            self._queue_pause_btn.setText("Resume" if q and q["paused"] else "Pause")
             self._queue_stop_btn.setEnabled(bool(q))
         if nav is not None and isValid(nav):
             nav.setText(short)
@@ -8987,17 +9103,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             print(f"[WARNING] {result.message} {getattr(result, 'detail', '')}")
         btn.setEnabled(True)
         QTimer.singleShot(1800, lambda: isValid(btn) and btn.setText("Kill All Roblox"))
-        q = getattr(self, "_launch_queue", None)
-        if q:
-            auto = getattr(self, "_queue_auto_chk", None)
-            if q["remaining"] and (auto is None or auto.isChecked() or getattr(self, "_queue_force_next", False)):
-                # Give Windows a moment to release the closed clients first.
-                QTimer.singleShot(1500, self._launch_next_batch)
-            elif not q["remaining"]:
-                self._launch_queue = None
-                print("[INFO] Batch queue finished.")
-                self._update_queue_status()
-        self._queue_force_next = False
+        if getattr(self, "_launch_queue", None):
+            self._poll_queue()  # the queue sees the closed clients and moves on
 
     def _emit_launch_done(self, success: bool, result):
         if isinstance(result, OperationResult):
