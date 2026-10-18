@@ -110,7 +110,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
           name: ANAne's Roblox Account Manager ${{ env.RELEASE_TAG }}
-          generate_release_notes: true
+          generate_release_notes: false  # notes come only from release-notes/<tag>.md
           fail_on_unmatched_files: true
           body_path: ${{ steps.notes.outputs.path }}
           files: |

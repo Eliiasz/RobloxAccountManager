@@ -1221,6 +1221,62 @@ def apply_saved_customizations_async(settings: dict | None, on_done) -> None:
     ).start()
 
 
+PERFORMANCE_FPS_MIN = 5
+PERFORMANCE_FPS_MAX = 240
+PERFORMANCE_QUALITY_MIN = 1
+PERFORMANCE_QUALITY_MAX = 10
+
+
+def performance_values(settings: dict) -> dict[str, str]:
+    """The FPS cap / graphics level the Performance section asks for (may be empty)."""
+    wanted: dict[str, str] = {}
+    if settings.get("perf_fps_enabled"):
+        try:
+            fps = int(settings.get("perf_fps", 30))
+        except (TypeError, ValueError):
+            fps = 30
+        wanted["FramerateCap"] = str(max(PERFORMANCE_FPS_MIN, min(PERFORMANCE_FPS_MAX, fps)))
+    if settings.get("perf_quality_enabled"):
+        try:
+            quality = int(settings.get("perf_quality", 1))
+        except (TypeError, ValueError):
+            quality = 1
+        wanted["SavedQualityLevel"] = str(
+            max(PERFORMANCE_QUALITY_MIN, min(PERFORMANCE_QUALITY_MAX, quality))
+        )
+    return wanted
+
+
+def apply_performance(settings: dict) -> OperationResult:
+    """Write the Performance FPS cap / graphics level into Roblox's settings file.
+
+    Only the two keys are touched, and nothing is written when they already
+    have the wanted values.
+    """
+    wanted = performance_values(settings)
+    if not wanted:
+        return OperationResult.success("Nothing to apply.", data={"changed": {}})
+    loaded = load_settings()
+    if not loaded:
+        return loaded
+    current = {
+        str(record.get("key")): str(record.get("value", ""))
+        for record in (loaded.data or {}).get("settings", [])
+        if isinstance(record, dict)
+    }
+    changes = {key: value for key, value in wanted.items() if current.get(key) != value}
+    if not changes:
+        return OperationResult.success("Already applied.", data={"changed": {}})
+    result = apply_settings(
+        changes,
+        expected_hash=loaded.data.get("file_hash", ""),
+        framerate_locked=None,
+    )
+    if not result:
+        return result
+    return OperationResult.success("Applied.", data={"changed": changes})
+
+
 def set_framerate_cap(fps: int) -> OperationResult:
     loaded = load_settings()
     if not loaded:

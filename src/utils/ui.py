@@ -387,6 +387,7 @@ class _Bridge(QObject):
     ban_check_done = Signal(object) # summary dict from ban check worker
     kill_roblox_done = Signal(object) # OperationResult from Kill All Roblox worker
     queue_poll_done = Signal(int) # running Roblox client count for the batch queue
+    perf_applied = Signal(object) # OperationResult from Performance "Apply now"
 
 
 SKIPPED_UPDATE_SETTING = "skipped_update_version"
@@ -1390,9 +1391,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def __init__(self, manager, icon_path: str | None = None):
         super().__init__()
         self.manager = manager
-        self.manager.set_pre_launch_hook(
-            roblox_settings_mod.apply_saved_customizations
-        )
+        self.manager.set_pre_launch_hook(self._pre_launch_settings)
         self._last_operation_error = ("", 0.0)
         self._chromium_download_active = False
         self._chromium_status_result = None
@@ -1460,6 +1459,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge.ban_check_result.connect(self._on_ban_check_result)
         self._bridge.ban_check_done.connect(self._on_ban_check_done)
         self._bridge.kill_roblox_done.connect(self._on_kill_roblox_done)
+        self._bridge.perf_applied.connect(self._on_perf_applied)
         self._bridge.account_creator_done.connect(self._on_account_creator_done)
         self._bridge.launch_done.connect(self._on_launch_and_refresh)
         self._bridge.avatar_ready.connect(self._on_avatar_ready)
@@ -3414,8 +3414,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         # The checkbox holds the state; the big button is what people click.
         self._proxy_enabled_chk = QCheckBox("Enable Proxy")
+        self._proxy_enabled_chk.setStyleSheet(
+            f"QCheckBox {{ color: {TEXT}; font-size: 12px; font-weight: 700; }}"
+        )
         self._proxy_enabled_chk.toggled.connect(self._on_proxy_enabled_toggled)
-        self._proxy_enabled_chk.hide()
 
         toggle_row = QHBoxLayout()
         toggle_row.setSpacing(10)
@@ -3428,7 +3430,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             lambda checked: self._proxy_enabled_chk.setChecked(bool(checked))
         )
         self._proxy_enabled_chk.toggled.connect(self._sync_proxy_toggle_btn)
-        toggle_row.addWidget(self._proxy_toggle_btn)
+        self._proxy_toggle_btn.hide()  # replaced by the checkbox
+        toggle_row.addWidget(self._proxy_enabled_chk)
         self._proxy_live_lbl = QLabel("Status: Off")
         self._proxy_live_lbl.setStyleSheet(f"color: {MUTED}; font-size: 12px; font-weight: 700;")
         toggle_row.addWidget(self._proxy_live_lbl)
@@ -4808,6 +4811,99 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content_stack.addWidget(sa)
 
+        f.addWidget(_sec("PERFORMANCE"))
+        _perf_desc = QLabel(
+            "Lower FPS and graphics to run more accounts. Applies to every Roblox window "
+            "that starts afterwards (all accounts share one Roblox settings file)."
+        )
+        _perf_desc.setWordWrap(True)
+        _perf_desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        f.addWidget(_perf_desc)
+
+        def _perf_slider_row(key: str, lo: int, hi: int, default: int, suffix: str):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(lo, hi)
+            box = QLineEdit()
+            box.setValidator(QIntValidator(lo, hi, box))
+            box.setFixedWidth(56)
+            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            unit = QLabel(suffix)
+            unit.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+            try:
+                start = int(S.get(key, default))
+            except (TypeError, ValueError):
+                start = default
+            start = max(lo, min(hi, start))
+            slider.setValue(start)
+            box.setText(str(start))
+
+            def _from_slider(v):
+                if box.text() != str(v):
+                    box.setText(str(v))
+                actions.save_ui_setting(key, int(v))
+                self._update_perf_status()
+
+            def _from_box(text):
+                try:
+                    v = int(text)
+                except ValueError:
+                    return
+                if lo <= v <= hi and slider.value() != v:
+                    slider.setValue(v)
+
+            slider.valueChanged.connect(_from_slider)
+            box.textEdited.connect(_from_box)
+            box.editingFinished.connect(lambda: box.setText(str(slider.value())))
+            row.addWidget(slider, 1)
+            row.addWidget(box)
+            row.addWidget(unit)
+            return row, slider
+
+        self._perf_fps_chk = _chk(
+            "perf_fps_enabled", "Limit FPS",
+            "Cap the frame rate of Roblox windows (5 to 240 FPS).",
+            on_change=lambda _on: self._update_perf_status(),
+        )
+        f.addWidget(self._perf_fps_chk)
+        _fps_row, self._perf_fps_slider = _perf_slider_row(
+            "perf_fps", roblox_settings_mod.PERFORMANCE_FPS_MIN,
+            roblox_settings_mod.PERFORMANCE_FPS_MAX, 30, "FPS")
+        f.addLayout(_fps_row)
+
+        self._perf_quality_chk = _chk(
+            "perf_quality_enabled", "Set Graphics Quality",
+            "Roblox graphics level: 1 = lowest, 10 = highest.",
+            on_change=lambda _on: self._update_perf_status(),
+        )
+        f.addWidget(self._perf_quality_chk)
+        _q_row, self._perf_quality_slider = _perf_slider_row(
+            "perf_quality", roblox_settings_mod.PERFORMANCE_QUALITY_MIN,
+            roblox_settings_mod.PERFORMANCE_QUALITY_MAX, 1, "level")
+        f.addLayout(_q_row)
+
+        self._perf_launch_chk = _chk(
+            "perf_apply_on_launch", "Apply on every launch",
+            "Write these values to Roblox's settings right before each account launches.",
+            default=True,
+            on_change=lambda _on: self._update_perf_status(),
+        )
+        f.addWidget(self._perf_launch_chk)
+
+        _perf_btn_row = QHBoxLayout()
+        self._perf_apply_btn = QPushButton("Apply now")
+        self._perf_apply_btn.setToolTip("Write the values now. Windows already open keep their settings until relaunched.")
+        self._perf_apply_btn.clicked.connect(self._on_perf_apply_now)
+        _perf_btn_row.addWidget(self._perf_apply_btn)
+        _perf_btn_row.addStretch(1)
+        f.addLayout(_perf_btn_row)
+        self._perf_status_lbl = QLabel("")
+        self._perf_status_lbl.setWordWrap(True)
+        self._perf_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        f.addWidget(self._perf_status_lbl)
+        self._update_perf_status()
+
         f.addWidget(_sec("LAUNCHER"))
         _launcher_lbl = QLabel(
             "Choose how Roblox is launched when you join a game."
@@ -4989,11 +5085,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Roblox window, same as the Kill All Roblox button.",
             on_change=self._on_sett_kill_hotkey_enabled,
         )
-        self._sett_kill_key_chk.hide()  # state holder; the ON/OFF button is what people use
+        f.addWidget(self._sett_kill_key_chk)
         kill_toggle_row = QHBoxLayout()
         kill_toggle_row.setSpacing(10)
         self._sett_kill_toggle_btn = QPushButton()
         self._sett_kill_toggle_btn.setCheckable(True)
+        self._sett_kill_toggle_btn.hide()  # replaced by the checkbox above
         self._sett_kill_toggle_btn.setFixedSize(84, 30)
         # Mouse only: a focused button is otherwise "clicked" by Space/Enter,
         # which would flip it whenever the shortcut key is pressed.
@@ -5003,7 +5100,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             lambda checked: self._sett_kill_key_chk.setChecked(bool(checked))
         )
         self._sett_kill_key_chk.toggled.connect(self._sync_kill_toggle_btn)
-        kill_toggle_row.addWidget(self._sett_kill_toggle_btn)
         self._sett_kill_state_lbl = QLabel()
         kill_toggle_row.addWidget(self._sett_kill_state_lbl)
         kill_toggle_row.addStretch(1)
@@ -6212,6 +6308,64 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
         return False
 
+    # Performance (FPS cap / graphics) ---------------------------------------
+    def _pre_launch_settings(self):
+        """Runs before every launch: saved Roblox customizations, then Performance."""
+        result = roblox_settings_mod.apply_saved_customizations()
+        if result is not None and not result:
+            return result
+        settings = actions.load_ui_settings()
+        if settings.get("perf_apply_on_launch", True) and roblox_settings_mod.performance_values(settings):
+            perf = roblox_settings_mod.apply_performance(settings)
+            if not perf:
+                # Never block a launch over this; just report it.
+                print(f"[WARNING] Performance settings were not applied: {perf.message}")
+            elif (perf.data or {}).get("changed"):
+                print(f"[INFO] Performance applied before launch: {perf.data['changed']}")
+        return result
+
+    def _update_perf_status(self) -> None:
+        label = getattr(self, "_perf_status_lbl", None)
+        if label is None or not isValid(label):
+            return
+        wanted = roblox_settings_mod.performance_values(actions.load_ui_settings())
+        if not wanted:
+            label.setText("Nothing selected. Roblox uses its own FPS and graphics settings.")
+            return
+        parts = []
+        if "FramerateCap" in wanted:
+            parts.append(f"{wanted['FramerateCap']} FPS")
+        if "SavedQualityLevel" in wanted:
+            parts.append(f"Graphics {wanted['SavedQualityLevel']}")
+        when = "on every launch" if actions.get_ui_setting("perf_apply_on_launch", True) else "when you press Apply now"
+        label.setText(f"Will use {', '.join(parts)} {when}.")
+
+    def _on_perf_apply_now(self) -> None:
+        settings = actions.load_ui_settings()
+        if not roblox_settings_mod.performance_values(settings):
+            self._perf_status_lbl.setText("Tick Limit FPS or Set Graphics Quality first.")
+            return
+        self._perf_apply_btn.setEnabled(False)
+        self._perf_status_lbl.setText("Applying…")
+
+        def _worker():
+            self._bridge.perf_applied.emit(roblox_settings_mod.apply_performance(settings))
+
+        threading.Thread(target=_worker, daemon=True, name="PerfApply").start()
+
+    def _on_perf_applied(self, result) -> None:
+        if not isValid(self._perf_apply_btn):
+            return
+        self._perf_apply_btn.setEnabled(True)
+        if result:
+            changed = (result.data or {}).get("changed") or {}
+            text = "Applied." if changed else "Already set."
+            self._perf_status_lbl.setText(
+                f"{text} New Roblox windows will use it; open ones keep their settings until relaunched."
+            )
+        else:
+            self._perf_status_lbl.setText(f"Could not apply: {result.message}")
+
     def _sync_kill_toggle_btn(self, on: bool) -> None:
         btn = getattr(self, "_sett_kill_toggle_btn", None)
         if btn is None or not isValid(btn):
@@ -6226,10 +6380,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         key = str(actions.get_ui_setting("kill_all_hotkey", "Ctrl+Shift+K") or "Ctrl+Shift+K")
         lbl = self._sett_kill_state_lbl
-        lbl.setText(f"Shortcut is ON · press {key} to kill all Roblox" if on else "Shortcut is OFF")
-        lbl.setStyleSheet(
-            f"color: {ACCENT_BRIGHT if on else MUTED}; font-size: 12px; font-weight: 700;"
-        )
+        lbl.setText(f"Press {key} to kill all Roblox" if on else "Shortcut is off")
+        lbl.setStyleSheet(f"color: {ACCENT_BRIGHT if on else MUTED}; font-size: 11px;")
 
     def _toggle_kill_hotkey_from_menu(self) -> None:
         enabled = not bool(actions.get_ui_setting("kill_all_hotkey_enabled", False))
