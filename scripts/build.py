@@ -63,12 +63,12 @@ def generate_version_info(version: str) -> None:
         "      StringTable(",
         "        u'040904B0',",
         "        [StringStruct(u'CompanyName', u'evanovar'),",
-        "        StringStruct(u'FileDescription', u'Evanovar RAM'),",
+        "        StringStruct(u'FileDescription', u'ANane RAM'),",
         f"        StringStruct(u'FileVersion', u'{windows_version}'),",
         "        StringStruct(u'InternalName', u'EvanovarRAM'),",
         "        StringStruct(u'LegalCopyright', u'Copyright (C) evanovar'),",
         "        StringStruct(u'OriginalFilename', u'EvanovarRAM.exe'),",
-        "        StringStruct(u'ProductName', u'Evanovar RAM'),",
+        "        StringStruct(u'ProductName', u'ANane RAM'),",
         f"        StringStruct(u'ProductVersion', u'{windows_version}')])",
         "      ]),",
         "    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])",
@@ -167,7 +167,7 @@ def main() -> int:
         print(f"[ERROR] Build preparation failed: {exc}")
         return 1
 
-    print(f"[INFO] Building Evanovar RAM {version}")
+    print(f"[INFO] Building ANane RAM {version}")
     environment = build_environment()
     result = subprocess.run(
         [

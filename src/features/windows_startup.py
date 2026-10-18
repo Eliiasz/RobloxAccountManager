@@ -114,7 +114,7 @@ def _run_powershell(script: str, kind: str = "Startup") -> OperationResult:
         return OperationResult.failure(
             f"{kind.upper().replace(' ', '_')}_SHORTCUT_CREATE_FAILED",
             f"{kind} Shortcut Could Not Be Created",
-            f"Windows could not create the Evanovar RAM {kind} shortcut.",
+            f"Windows could not create the ANane RAM {kind} shortcut.",
             detail=detail or f"PowerShell exit code: {completed.returncode}",
         )
     return OperationResult.success()
@@ -249,7 +249,7 @@ def enable_startup() -> OperationResult:
         script = _build_shortcut_script(
             shortcut_path,
             launch_result.data,
-            "Start Evanovar RAM with Windows",
+            "Start ANane RAM with Windows",
         )
         result = _run_powershell(script)
         if not result:
@@ -262,11 +262,11 @@ def enable_startup() -> OperationResult:
                 detail=f"Shortcut: {shortcut_path}",
             )
         return OperationResult.success(
-            "Evanovar RAM will start with Windows.",
+            "ANane RAM will start with Windows.",
             data={"shortcut_path": shortcut_path},
         )
     except Exception as exc:
-        return unexpected_result("Enabling Evanovar RAM at Windows startup", exc)
+        return unexpected_result("Enabling ANane RAM at Windows startup", exc)
 
 
 def disable_startup() -> OperationResult:
@@ -285,17 +285,17 @@ def disable_startup() -> OperationResult:
             return OperationResult.failure(
                 "STARTUP_SHORTCUT_REMOVE_FAILED",
                 "Startup Shortcut Could Not Be Removed",
-                "Windows did not remove the Evanovar RAM Startup shortcut.",
+                "Windows did not remove the ANane RAM Startup shortcut.",
                 detail=f"Shortcut: {shortcut_path}",
             )
         return OperationResult.success(
-            "Evanovar RAM will no longer start with Windows.",
+            "ANane RAM will no longer start with Windows.",
             data={"shortcut_path": shortcut_path},
         )
     except Exception as exc:
         return OperationResult.failure(
             "STARTUP_SHORTCUT_REMOVE_FAILED",
             "Startup Shortcut Could Not Be Removed",
-            "The Evanovar RAM Startup shortcut could not be removed.",
+            "The ANane RAM Startup shortcut could not be removed.",
             detail=f"{type(exc).__name__}: {exc}",
         )

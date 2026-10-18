@@ -24,8 +24,8 @@ import win32api
 from classes.operation_result import OperationResult
 from utils.app_paths import get_data_dir
 
-GITHUB_API = "https://api.github.com/repos/evanovar/RobloxAccountManager/releases/latest"
-RELEASES_PAGE = "https://github.com/evanovar/RobloxAccountManager/releases/latest"
+GITHUB_API = "https://api.github.com/repos/Eliiasz/RobloxAccountManager/releases/latest"
+RELEASES_PAGE = "https://github.com/Eliiasz/RobloxAccountManager/releases/latest"
 RELEASE_ASSET_PATTERN = re.compile(
     r"^EvanovarRAM-v\d+\.\d+\.\d+(?:\.\d+)?\.exe$",
     re.IGNORECASE,
@@ -323,7 +323,7 @@ try {{
     Remove-Item -LiteralPath $UpdateDirectory -Force -ErrorAction SilentlyContinue
     exit 0
 }} catch {{
-    $detail = "Evanovar RAM automatic update failed.`r`n"
+    $detail = "ANane RAM automatic update failed.`r`n"
     $detail += "Timestamp: $([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))`r`n"
     $detail += "Destination: $DestinationPath`r`n"
     $detail += "Error: $($_.Exception.Message)"
@@ -406,7 +406,7 @@ def download_update(
             on_progress(0)
             asset = get_exe_asset()
             if not asset:
-                on_done(False, "No Evanovar RAM executable was found in the latest release.")
+                on_done(False, "No ANane RAM executable was found in the latest release.")
                 return
 
             url, filename = asset["url"], asset["name"]
