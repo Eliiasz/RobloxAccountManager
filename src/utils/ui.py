@@ -2288,6 +2288,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Right-click to turn the Kill All shortcut key on or off."
         )
         self._kill_roblox_btn = kill_roblox_button
+        kill_roblox_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         kill_roblox_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         kill_roblox_button.customContextMenuRequested.connect(self._show_kill_button_menu)
         icons.set_button_icon(kill_roblox_button, "power", _THEME)
@@ -3166,7 +3167,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Scans every saved account and lists the ones that are banned, terminated, whose login "
             "no longer works (locked / signed out), or that got Roblox's \"not a bot\" security check "
             "when launching (Needs verification). Tick the ones you want gone and delete them. "
-            "Needs verification and Unknown accounts are listed but never ticked automatically."
+            "Needs verification accounts are ticked by Tick All Problems; Unknown ones never are."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
@@ -3211,6 +3212,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(6)
         self._ban_tick_all_btn = QPushButton("Tick All Problems")
+        self._ban_tick_all_btn.setToolTip("Ticks Banned, Terminated, Locked and Needs verification accounts")
         self._ban_tick_all_btn.clicked.connect(lambda: self._set_ban_ticks(True))
         self._ban_untick_btn = QPushButton("Untick All")
         self._ban_untick_btn.clicked.connect(lambda: self._set_ban_ticks(False))
@@ -3322,7 +3324,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 continue
             status = item.data(0, Qt.ItemDataRole.UserRole)
             if tick:
-                if status in health_mod.PROBLEM_STATUSES:
+                if status in health_mod.PROBLEM_STATUSES or status in health_mod.ATTENTION_STATUSES:
                     item.setCheckState(0, Qt.CheckState.Checked)
             else:
                 item.setCheckState(0, Qt.CheckState.Unchecked)
@@ -3420,6 +3422,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._proxy_toggle_btn = QPushButton("OFF")
         self._proxy_toggle_btn.setCheckable(True)
         self._proxy_toggle_btn.setFixedSize(84, 30)
+        self._proxy_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._proxy_toggle_btn.setToolTip("Turn the proxy on or off")
         self._proxy_toggle_btn.clicked.connect(
             lambda checked: self._proxy_enabled_chk.setChecked(bool(checked))
@@ -4992,6 +4995,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._sett_kill_toggle_btn = QPushButton()
         self._sett_kill_toggle_btn.setCheckable(True)
         self._sett_kill_toggle_btn.setFixedSize(84, 30)
+        # Mouse only: a focused button is otherwise "clicked" by Space/Enter,
+        # which would flip it whenever the shortcut key is pressed.
+        self._sett_kill_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._sett_kill_toggle_btn.setToolTip("Turn the Kill All Roblox shortcut on or off")
         self._sett_kill_toggle_btn.clicked.connect(
             lambda checked: self._sett_kill_key_chk.setChecked(bool(checked))
@@ -5018,7 +5024,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         self._sett_kill_key_btn.recording_started.connect(self._unregister_kill_hotkey)
         self._sett_kill_key_btn.recording_canceled.connect(
-            lambda: self._apply_kill_hotkey(show_error=False)
+            lambda: (self._apply_kill_hotkey(show_error=False), self._sett_kill_key_btn.clearFocus())
         )
         self._sett_kill_key_btn.sequence_changed.connect(self._on_sett_kill_hotkey_changed)
         kill_row.addWidget(self._sett_kill_key_btn)
@@ -6254,6 +6260,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._unregister_kill_hotkey()
 
     def _on_sett_kill_hotkey_changed(self, sequence: str) -> None:
+        # Drop focus so the shortcut key (e.g. Space) can't "click" the picker again.
+        btn = getattr(self, "_sett_kill_key_btn", None)
+        if btn is not None and isValid(btn):
+            QTimer.singleShot(0, btn.clearFocus)
         actions.save_ui_setting("kill_all_hotkey", sequence)
         self._apply_kill_hotkey()
         self._sync_kill_toggle_btn(bool(actions.get_ui_setting("kill_all_hotkey_enabled", False)))
