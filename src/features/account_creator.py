@@ -41,8 +41,16 @@ _NOUNS = (
 )
 
 
-def _random_string(length: int) -> str:
-    characters = string.ascii_letters + string.digits
+SUFFIX_TYPES = ("mixed", "numbers", "letters")
+_SUFFIX_CHARSETS = {
+    "mixed": string.ascii_letters + string.digits,
+    "numbers": string.digits,
+    "letters": string.ascii_letters,
+}
+
+
+def _random_string(length: int, kind: str = "mixed") -> str:
+    characters = _SUFFIX_CHARSETS.get(kind, _SUFFIX_CHARSETS["mixed"])
     return "".join(secrets.choice(characters) for _ in range(max(1, length)))
 
 
@@ -61,7 +69,7 @@ def _generate_username(options: dict | None = None) -> str:
         prefix = str(settings.get("prefix", "") or "").strip()
         if not is_valid_prefix(prefix):
             raise ValueError("The custom prefix does not meet the requirements.")
-        suffix = _random_string(RANDOM_SUFFIX_LENGTH)
+        suffix = _random_string(RANDOM_SUFFIX_LENGTH, str(settings.get("suffix_type", "mixed")))
         return f"{prefix}{suffix}"[:MAX_USERNAME_LENGTH]
 
     base = f"{secrets.choice(_ADJECTIVES)}{secrets.choice(_NOUNS)}"

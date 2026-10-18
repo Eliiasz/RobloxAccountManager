@@ -382,6 +382,7 @@ class _Bridge(QObject):
     roblox_settings_path_changed = Signal(object)
     console_wakeup = Signal()
     proxy_test_done = Signal(bool, str) # (success, message) from proxy test worker
+    proxy_ping_done = Signal(bool, str) # (success, "123 ms") from proxy ping worker
     ban_check_result = Signal(object, int, int) # (HealthResult, index, total) from ban check worker
     ban_check_done = Signal(object) # summary dict from ban check worker
     kill_roblox_done = Signal(object) # OperationResult from Kill All Roblox worker
@@ -1454,6 +1455,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge = _Bridge()
         self._bridge.account_added.connect(self._on_add_done_main)
         self._bridge.proxy_test_done.connect(self._on_proxy_test_done)
+        self._bridge.proxy_ping_done.connect(self._on_proxy_ping_done)
         self._bridge.ban_check_result.connect(self._on_ban_check_result)
         self._bridge.ban_check_done.connect(self._on_ban_check_done)
         self._bridge.kill_roblox_done.connect(self._on_kill_roblox_done)
@@ -2269,6 +2271,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         lay.addStretch(1)
 
+        self._nav_queue_lbl = QLabel("")
+        self._nav_queue_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._nav_queue_lbl.setStyleSheet(f"color: {ACCENT_BRIGHT}; font-size: 10px; font-weight: 700;")
+        self._nav_queue_lbl.setToolTip("Batch queue in progress. Kill All Roblox opens the next batch.")
+        self._nav_queue_lbl.hide()
+        lay.addWidget(self._nav_queue_lbl)
+
         kill_roblox_button = QPushButton("Kill All Roblox")
         kill_roblox_button.setToolTip("Instantly close every running Roblox window (no confirmation)")
         self._kill_roblox_btn = kill_roblox_button
@@ -2502,6 +2511,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         header_row.addStretch(1)
 
+        self._ram_total_lbl = QLabel("")
+        self._ram_total_lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px; margin-right: 8px;")
+        self._ram_total_lbl.hide()
+        header_row.addWidget(self._ram_total_lbl)
+
         # encryption label
         self._enc_label = QLabel()
         self._enc_label.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
@@ -2627,6 +2641,26 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         remove_btn.clicked.connect(self._on_remove_account)
 
+        # Quick Sign-in gets its own button, first in the row.
+        quick_btn = QPushButton("Quick Sign-in")
+        icons.set_button_icon(quick_btn, "enter", _THEME)
+        quick_btn.setToolTip(
+            "Opens Roblox login and starts Quick Sign-in for you.\n"
+            "Type the code it shows on a phone or PC where you're already signed in."
+        )
+        quick_btn.setFixedHeight(26)
+        quick_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        quick_btn.setStyleSheet(
+            f"QPushButton {{ background: {INPUT}; border: 1px solid {LINE};"
+            f"  font-size: 11px; min-height: 26px; padding: 2px 8px;"
+            f"  text-align: center; color: {TEXT}; }}"
+            f"QPushButton:hover   {{ background: {SELECT}; }}"
+            f"QPushButton:pressed {{ background: {SELECT}; }}"
+        )
+        quick_btn.clicked.connect(self._on_add_account_quick)
+        self._quick_signin_btn = quick_btn
+
+        bottom.addWidget(quick_btn, 1)
         bottom.addWidget(self._add_btn, 1)
         bottom.addWidget(remove_btn)
         bottom.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -3359,12 +3393,28 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
         lay.addWidget(desc)
 
+        # The checkbox holds the state; the big button is what people click.
         self._proxy_enabled_chk = QCheckBox("Enable Proxy")
-        self._proxy_enabled_chk.setStyleSheet(
-            f"QCheckBox {{ color: {TEXT}; font-size: 12px; font-weight: 700; }}"
-        )
         self._proxy_enabled_chk.toggled.connect(self._on_proxy_enabled_toggled)
-        lay.addWidget(self._proxy_enabled_chk)
+        self._proxy_enabled_chk.hide()
+
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(10)
+        self._proxy_toggle_btn = QPushButton("OFF")
+        self._proxy_toggle_btn.setCheckable(True)
+        self._proxy_toggle_btn.setFixedSize(84, 30)
+        self._proxy_toggle_btn.setToolTip("Turn the proxy on or off")
+        self._proxy_toggle_btn.clicked.connect(
+            lambda checked: self._proxy_enabled_chk.setChecked(bool(checked))
+        )
+        self._proxy_enabled_chk.toggled.connect(self._sync_proxy_toggle_btn)
+        toggle_row.addWidget(self._proxy_toggle_btn)
+        self._proxy_live_lbl = QLabel("Status: Off")
+        self._proxy_live_lbl.setStyleSheet(f"color: {MUTED}; font-size: 12px; font-weight: 700;")
+        toggle_row.addWidget(self._proxy_live_lbl)
+        toggle_row.addStretch(1)
+        lay.addLayout(toggle_row)
+        self._proxy_ping_text = ""
 
         label_style = f"color: {MUTED}; font-size: 11px; min-width: 90px;"
 
@@ -3430,6 +3480,36 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._proxy_gateway_edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
         gw_lay.addWidget(self._proxy_gateway_edit, 1)
         lay.addWidget(self._proxy_gateway_box)
+
+        self._proxy_manual_chk = QCheckBox("Enter details manually")
+        self._proxy_manual_chk.setStyleSheet(f"QCheckBox {{ color: {MUTED}; font-size: 11px; }}")
+        lay.addWidget(self._proxy_manual_chk)
+
+        self._proxy_manual_box = QWidget()
+        man_lay = QVBoxLayout(self._proxy_manual_box)
+        man_lay.setContentsMargins(0, 0, 0, 0)
+        man_lay.setSpacing(6)
+        self._proxy_manual_fields = {}
+        for key, label, placeholder, secret in (
+            ("host", "Host / IP:", "e.g. gate.provider.com or 1.2.3.4", False),
+            ("port", "Port:", "e.g. 1080", False),
+            ("user", "Username:", "leave empty if none", False),
+            ("password", "Password:", "leave empty if none", True),
+        ):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; min-width: 90px;")
+            row.addWidget(lbl)
+            edit = QLineEdit()
+            edit.setPlaceholderText(placeholder)
+            if secret:
+                edit.setEchoMode(QLineEdit.EchoMode.Password)
+            row.addWidget(edit, 1)
+            man_lay.addLayout(row)
+            self._proxy_manual_fields[key] = edit
+        lay.addWidget(self._proxy_manual_box)
+        self._proxy_manual_chk.toggled.connect(self._update_proxy_mode_visibility)
 
         self._proxy_gateway_hint = QLabel(
             "Tip: to keep one IP for a few minutes, use your provider's sticky-session username "
@@ -3531,12 +3611,22 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         idx = self._proxy_scheme_combo.findData(cfg["default_scheme"])
         self._proxy_scheme_combo.setCurrentIndex(max(0, idx))
         self._proxy_gateway_edit.setText(cfg["gateway"])
+        manual = actions.get_ui_setting("proxy_manual", {}) or {}
+        if isinstance(manual, dict) and manual.get("enabled"):
+            self._proxy_manual_chk.setChecked(True)
+            for key in ("host", "port", "user"):
+                self._proxy_manual_fields[key].setText(str(manual.get(key, "") or ""))
+            # The password lives only in the saved proxy entry, never separately.
+            parts = str(cfg["gateway"]).split(":", 3)
+            if len(parts) == 4:
+                self._proxy_manual_fields["password"].setText(parts[3])
         self._proxy_list_edit.setPlainText("\n".join(cfg["proxies"]))
         self._proxy_rotate_spin.setValue(int(cfg["rotate_minutes"]))
         self._proxy_random_chk.setChecked(bool(cfg["randomize"]))
         for w in widgets:
             w.blockSignals(False)
         self._update_proxy_mode_visibility()
+        self._sync_proxy_toggle_btn(self._proxy_enabled_chk.isChecked())
 
     def _collect_proxy_config(self) -> dict:
         lines = [
@@ -3548,15 +3638,41 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "enabled": self._proxy_enabled_chk.isChecked(),
             "mode": proxy_mod.MODE_LIST if self._proxy_mode_list.isChecked() else proxy_mod.MODE_GATEWAY,
             "default_scheme": self._proxy_scheme_combo.currentData() or "socks5h",
-            "gateway": self._proxy_gateway_edit.text().strip(),
+            "gateway": self._manual_proxy_text() if self._proxy_manual_chk.isChecked()
+            else self._proxy_gateway_edit.text().strip(),
             "proxies": lines,
             "rotate_minutes": self._proxy_rotate_spin.value(),
             "randomize": self._proxy_random_chk.isChecked(),
         }
 
+    def _manual_proxy_text(self) -> str:
+        f = {k: e.text().strip() for k, e in self._proxy_manual_fields.items()}
+        actions.save_ui_setting("proxy_manual", {
+            "enabled": True, "host": f["host"], "port": f["port"], "user": f["user"],
+        })
+        if not f["host"] or not f["port"]:
+            return ""
+        if f["user"]:
+            return f"{f['host']}:{f['port']}:{f['user']}:{f['password']}"
+        return f"{f['host']}:{f['port']}"
+
+    def _sync_proxy_toggle_btn(self, on: bool) -> None:
+        btn = self._proxy_toggle_btn
+        btn.blockSignals(True)
+        btn.setChecked(bool(on))
+        btn.blockSignals(False)
+        btn.setText("ON" if on else "OFF")
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT_BRIGHT if on else INPUT}; color: {ON_ACCENT if on else TEXT};"
+            f" border: 1px solid {ACCENT_BRIGHT if on else LINE}; font-weight: 700; font-size: 12px; }}"
+        )
+
     def _update_proxy_mode_visibility(self, *_args) -> None:
         is_list = self._proxy_mode_list.isChecked()
-        self._proxy_gateway_box.setVisible(not is_list)
+        manual = self._proxy_manual_chk.isChecked() and not is_list
+        self._proxy_manual_chk.setVisible(not is_list)
+        self._proxy_manual_box.setVisible(manual)
+        self._proxy_gateway_box.setVisible(not is_list and not manual)
         self._proxy_gateway_hint.setVisible(not is_list)
         self._proxy_list_box.setVisible(is_list)
         self._proxy_rotate_btn.setVisible(is_list)
@@ -3579,6 +3695,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         proxy_mod.save_config(cfg)
         proxy_mod.manager.apply(cfg)
+        self._proxy_ping_tick = 0
+        self._proxy_ping_text = ""
         self._refresh_proxy_status()
 
         if error:
@@ -3596,6 +3714,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._proxy_result_lbl.setText(note)
 
     def _on_proxy_save(self) -> None:
+        if not self._proxy_manual_chk.isChecked():
+            actions.save_ui_setting("proxy_manual", {"enabled": False})
         self._apply_proxy_config(self._collect_proxy_config())
 
     def _on_proxy_enabled_toggled(self, _checked: bool) -> None:
@@ -3638,10 +3758,46 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._proxy_result_lbl.setStyleSheet(f"color: {color}; font-size: 11px;")
         self._proxy_result_lbl.setText(message)
 
+    def _start_proxy_ping(self) -> None:
+        url = proxy_mod.manager.current
+        if not url or getattr(self, "_proxy_ping_running", False):
+            return
+        self._proxy_ping_running = True
+
+        def _worker(target=url):
+            ok, info, secs = proxy_mod.test_proxy(target, timeout=10)
+            self._bridge.proxy_ping_done.emit(ok, f"{secs * 1000:.0f} ms" if ok else "no response")
+
+        threading.Thread(target=_worker, daemon=True, name="ProxyPing").start()
+
+    def _on_proxy_ping_done(self, ok: bool, text: str) -> None:
+        self._proxy_ping_running = False
+        self._proxy_ping_text = text if ok else "⚠ " + text
+        self._refresh_proxy_status()
+
     def _refresh_proxy_status(self) -> None:
         if not isValid(self._proxy_status_lbl):
             return
         st = proxy_mod.manager.status()
+        live = getattr(self, "_proxy_live_lbl", None)
+        if live is not None and isValid(live):
+            if st["enabled"]:
+                ping = self._proxy_ping_text or "checking…"
+                live.setText(f"Status: On  ·  Ping {ping}")
+                bad = self._proxy_ping_text.startswith("⚠")
+                live.setStyleSheet(
+                    f"color: {'#e06c6c' if bad else ACCENT_BRIGHT}; font-size: 12px; font-weight: 700;"
+                )
+                # Ping every 30 seconds while on.
+                tick = getattr(self, "_proxy_ping_tick", 0) + 1
+                self._proxy_ping_tick = tick
+                if tick == 1 or tick % 30 == 0:
+                    self._start_proxy_ping()
+            else:
+                self._proxy_ping_tick = 0
+                self._proxy_ping_text = ""
+                live.setText("Status: Off")
+                live.setStyleSheet(f"color: {MUTED}; font-size: 12px; font-weight: 700;")
         if not st["enabled"]:
             self._proxy_status_lbl.setText("Status: Off")
             self._proxy_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
@@ -3754,11 +3910,155 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         form.addLayout(row_h64)
 
         lay.addLayout(form)
+
+        # Batch queue
+        q_title = QLabel("Batch Queue")
+        q_title.setStyleSheet(f"color: {TEXT}; font-size: 12px; font-weight: 700; margin-top: 14px;")
+        lay.addWidget(q_title)
+        q_desc = QLabel(
+            "Launch big selections a few at a time. Select all the accounts you want and press "
+            "Join / Launch: only the first batch opens. Press Kill All Roblox (or Next Batch) to "
+            "close them and open the next batch, until every account has had its turn."
+        )
+        q_desc.setWordWrap(True)
+        q_desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        lay.addWidget(q_desc)
+
+        self._queue_enabled_chk = QCheckBox("Enable Batch Queue")
+        self._queue_enabled_chk.setChecked(bool(actions.get_ui_setting("mr_batch_enabled", False)))
+        self._queue_enabled_chk.toggled.connect(
+            lambda on: actions.save_ui_setting("mr_batch_enabled", bool(on))
+        )
+        lay.addWidget(self._queue_enabled_chk)
+
+        q_row = QHBoxLayout()
+        q_row.setSpacing(8)
+        q_lbl = QLabel("Accounts per batch:")
+        q_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; min-width: 80px;")
+        q_row.addWidget(q_lbl)
+        self._queue_size_spin = QSpinBox()
+        self._queue_size_spin.setRange(1, 100)
+        self._queue_size_spin.setValue(int(actions.get_ui_setting("mr_batch_size", 5) or 5))
+        self._queue_size_spin.setFixedWidth(60)
+        self._queue_size_spin.setStyleSheet(
+            f"QSpinBox {{ background: {INPUT}; border: 1px solid {LINE};"
+            f" color: {TEXT}; padding: 4px; border-radius: 3px; }}"
+        )
+        self._queue_size_spin.valueChanged.connect(
+            lambda v: actions.save_ui_setting("mr_batch_size", int(v))
+        )
+        q_row.addWidget(self._queue_size_spin)
+        self._queue_auto_chk = QCheckBox("Kill All opens the next batch")
+        self._queue_auto_chk.setChecked(bool(actions.get_ui_setting("mr_batch_auto_next", True)))
+        self._queue_auto_chk.toggled.connect(
+            lambda on: actions.save_ui_setting("mr_batch_auto_next", bool(on))
+        )
+        self._queue_auto_chk.setStyleSheet(f"QCheckBox {{ color: {MUTED}; font-size: 11px; }}")
+        q_row.addWidget(self._queue_auto_chk)
+        q_row.addStretch(1)
+        lay.addLayout(q_row)
+
+        q_btns = QHBoxLayout()
+        q_btn_style = (
+            f"QPushButton {{ background: {INPUT}; border: 1px solid {LINE};"
+            f" color: {TEXT}; padding: 4px 12px; border-radius: 0; }}"
+            f"QPushButton:hover {{ background: {SELECT}; }}"
+            f"QPushButton:disabled {{ color: {MUTED}; }}"
+        )
+        self._queue_next_btn = QPushButton("Next Batch")
+        self._queue_next_btn.setToolTip("Close running Roblox and open the next batch now")
+        self._queue_next_btn.clicked.connect(self._on_queue_next_clicked)
+        self._queue_stop_btn = QPushButton("Stop Queue")
+        self._queue_stop_btn.clicked.connect(self._stop_launch_queue)
+        for b in (self._queue_next_btn, self._queue_stop_btn):
+            b.setFixedHeight(26)
+            b.setStyleSheet(q_btn_style)
+            q_btns.addWidget(b)
+        q_btns.addStretch(1)
+        lay.addLayout(q_btns)
+
+        self._queue_status_lbl = QLabel("Queue: empty")
+        self._queue_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        lay.addWidget(self._queue_status_lbl)
         lay.addStretch(1)
+
+        self._launch_queue = None
+        self._update_queue_status()
 
         # Load saved state
         self._load_mr_settings()
         return panel
+
+    # Batch queue -----------------------------------------------------------
+    def _queue_or_all(self, usernames: list[str], send_batch) -> list[str] | None:
+        """Start a queue when it is enabled and the selection is bigger than a batch.
+
+        Returns the accounts to launch now, or the full list when no queue applies.
+        """
+        if not getattr(self, "_queue_enabled_chk", None) or not self._queue_enabled_chk.isChecked():
+            return usernames
+        size = max(1, self._queue_size_spin.value())
+        if len(usernames) <= size:
+            return usernames
+        batches = (len(usernames) + size - 1) // size
+        self._launch_queue = {
+            "remaining": list(usernames[size:]),
+            "send": send_batch,
+            "size": size,
+            "batch": 1,
+            "batches": batches,
+            "total": len(usernames),
+        }
+        print(f"[INFO] Batch queue: {len(usernames)} accounts in {batches} batches of {size}. Starting batch 1.")
+        self._update_queue_status()
+        return list(usernames[:size])
+
+    def _launch_next_batch(self) -> None:
+        q = getattr(self, "_launch_queue", None)
+        if not q or not q["remaining"]:
+            self._launch_queue = None
+            self._update_queue_status()
+            return
+        batch = q["remaining"][: q["size"]]
+        q["remaining"] = q["remaining"][q["size"]:]
+        q["batch"] += 1
+        print(f"[INFO] Batch queue: starting batch {q['batch']}/{q['batches']} ({len(batch)} accounts)")
+        try:
+            q["send"](batch)
+        except Exception as exc:
+            print(f"[ERROR] Batch queue could not launch the next batch: {exc}")
+        if not q["remaining"]:
+            print("[INFO] Batch queue: this is the last batch.")
+        self._update_queue_status()
+
+    def _on_queue_next_clicked(self) -> None:
+        self._queue_force_next = True
+        self._on_kill_all_roblox()
+
+    def _stop_launch_queue(self) -> None:
+        if getattr(self, "_launch_queue", None):
+            print("[INFO] Batch queue stopped.")
+        self._launch_queue = None
+        self._update_queue_status()
+
+    def _update_queue_status(self) -> None:
+        q = getattr(self, "_launch_queue", None)
+        label = getattr(self, "_queue_status_lbl", None)
+        nav = getattr(self, "_nav_queue_lbl", None)
+        if q:
+            waiting = len(q["remaining"])
+            text = f"Batch {q['batch']}/{q['batches']} running · {waiting} account{'s' if waiting != 1 else ''} waiting"
+            short = f"Batch {q['batch']}/{q['batches']}"
+        else:
+            text, short = "Queue: empty", ""
+        if label is not None and isValid(label):
+            label.setText(text)
+            label.setStyleSheet(f"color: {ACCENT_BRIGHT if q else MUTED}; font-size: 11px;")
+            self._queue_next_btn.setEnabled(bool(q and q["remaining"]))
+            self._queue_stop_btn.setEnabled(bool(q))
+        if nav is not None and isValid(nav):
+            nav.setText(short)
+            nav.setVisible(bool(q))
 
     def _is_admin(self) -> bool:
         try:
@@ -4475,13 +4775,27 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         f.addLayout(rename_mode_row)
         self._update_rename_mode_controls()
 
+        f.addWidget(_sec("RAM USAGE"))
         self._sett_monitoring_chk = _chk(
-            "presence_indicator", "Account Activity Monitor",
-            "Show online status and local Roblox RAM and CPU usage.\n"
-            "Scans saved accounts every 5 seconds without using the Roblox API.",
+            "presence_indicator", "Show RAM Usage of Running Accounts",
+            "Show how much RAM (and CPU) each running Roblox account uses, next to its name,\n"
+            "plus a total above the account list. Updates every 5 seconds.",
             on_change=self._on_sett_presence_indicator,
         )
         f.addWidget(self._sett_monitoring_chk)
+        self._sett_ram_percent_chk = _chk(
+            "ram_show_percent", "Also show RAM as % of total PC memory",
+            "Example: 812 MB (5%). Uses your total installed memory.",
+            on_change=lambda _on: self._update_activity_rows(),
+        )
+        f.addLayout(_sub_indent(self._sett_ram_percent_chk))
+        self._sett_ram_total_chk = _chk(
+            "ram_show_total", "Show total for all running accounts",
+            "Shows e.g. \"4 running · 2.6 GB (16%)\" above the account list.",
+            default=True,
+            on_change=lambda _on: self._update_activity_rows(),
+        )
+        f.addLayout(_sub_indent(self._sett_ram_total_chk))
 
         # Start scanner immediately if the setting is already on
         if actions.load_ui_settings().get("presence_indicator", False):
@@ -6274,7 +6588,47 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         for username, dot in self._presence_dots.items():
             dot.setVisible(username in self._online_usernames)
 
+    _TOTAL_RAM_MB = None
+
+    @classmethod
+    def _total_ram_mb(cls) -> float:
+        if cls._TOTAL_RAM_MB is None:
+            try:
+                cls._TOTAL_RAM_MB = psutil.virtual_memory().total / 1024 / 1024
+            except Exception:
+                cls._TOTAL_RAM_MB = 0.0
+        return cls._TOTAL_RAM_MB
+
+    @staticmethod
+    def _format_mb(mb: float) -> str:
+        return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
+
+    def _update_ram_total(self) -> None:
+        label = getattr(self, "_ram_total_lbl", None)
+        if label is None or not isValid(label):
+            return
+        settings = actions.load_ui_settings()
+        if not settings.get("presence_indicator", False) or not settings.get("ram_show_total", True):
+            label.hide()
+            return
+        running = [m for m in self._activity_snapshot.values() if m.get("ram_available")]
+        if not running:
+            label.setText("0 running")
+            label.show()
+            return
+        total = sum(float(m.get("ram_mb", 0.0) or 0.0) for m in running)
+        text = f"{len(running)} running · {self._format_mb(total)}"
+        pc_total = self._total_ram_mb()
+        if pc_total:
+            text += f" ({total / pc_total * 100:.0f}%)"
+        label.setText(text)
+        label.setToolTip("RAM used by all running Roblox accounts (% of total PC memory)")
+        label.show()
+
     def _update_activity_rows(self) -> None:
+        show_percent = bool(actions.get_ui_setting("ram_show_percent", False))
+        pc_total = self._total_ram_mb() if show_percent else 0.0
+        self._update_ram_total()
         for username, container in self._activity_widgets.items():
             metrics = self._activity_snapshot.get(username)
             if not metrics:
@@ -6288,6 +6642,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 if metrics.get("ram_available", False)
                 else "N/A"
             )
+            if pc_total and metrics.get("ram_available", False):
+                ram_text += f" ({ram_mb / pc_total * 100:.0f}%)"
             cpu_text = (
                 f"{cpu_percent:.1f}%"
                 if metrics.get("cpu_available", False)
@@ -8452,6 +8808,23 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
 
     def _dispatch_join_place(self, usernames: list[str], place_id: str, private: str, effective_place_id: str):
+        usernames = self._queue_or_all(
+            usernames,
+            lambda batch: self._send_join_place(batch, place_id, private, effective_place_id),
+        )
+        self._send_join_place(usernames, place_id, private, effective_place_id)
+
+        # Fetch the game name fresh instead of trusting the "Current Place" label,
+        # which is populated by an independent debounced fetch that may not have
+        # finished yet (especially for share links, which need two network calls).
+        def _save_recent_worker():
+            name = actions.fetch_game_name(effective_place_id)
+            actions.save_recent_game(effective_place_id, name, private)
+            self._bridge.recent_game_saved.emit()
+
+        threading.Thread(target=_save_recent_worker, daemon=True, name="save-recent-game").start()
+
+    def _send_join_place(self, usernames: list[str], place_id: str, private: str, effective_place_id: str):
         if len(usernames) == 1:
             print(f"[INFO] Joining place {effective_place_id} for {usernames[0]}")
             actions.join_place(
@@ -8464,16 +8837,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 self.manager, usernames, place_id, private,
                 on_done=self._emit_launch_done,
             )
-
-        # Fetch the game name fresh instead of trusting the "Current Place" label,
-        # which is populated by an independent debounced fetch that may not have
-        # finished yet (especially for share links, which need two network calls).
-        def _save_recent_worker():
-            name = actions.fetch_game_name(effective_place_id)
-            actions.save_recent_game(effective_place_id, name, private)
-            self._bridge.recent_game_saved.emit()
-
-        threading.Thread(target=_save_recent_worker, daemon=True, name="save-recent-game").start()
 
     def _on_join_user(self):
         usernames = self._get_selected_usernames()
@@ -8577,6 +8940,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
         if not self._confirm_launch("Launch Roblox Home", usernames):
             return
+        usernames = self._queue_or_all(
+            usernames,
+            lambda batch: actions.launch_home(self.manager, batch, on_done=self._emit_launch_done),
+        )
         if len(usernames) == 1:
             print(f"[INFO] Launching Roblox Home for {usernames[0]}")
             launch_accounts = usernames[0]
@@ -8618,6 +8985,17 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             print(f"[WARNING] {result.message} {getattr(result, 'detail', '')}")
         btn.setEnabled(True)
         QTimer.singleShot(1800, lambda: isValid(btn) and btn.setText("Kill All Roblox"))
+        q = getattr(self, "_launch_queue", None)
+        if q:
+            auto = getattr(self, "_queue_auto_chk", None)
+            if q["remaining"] and (auto is None or auto.isChecked() or getattr(self, "_queue_force_next", False)):
+                # Give Windows a moment to release the closed clients first.
+                QTimer.singleShot(1500, self._launch_next_batch)
+            elif not q["remaining"]:
+                self._launch_queue = None
+                print("[INFO] Batch queue finished.")
+                self._update_queue_status()
+        self._queue_force_next = False
 
     def _emit_launch_done(self, success: bool, result):
         if isinstance(result, OperationResult):
@@ -9411,7 +9789,7 @@ class _AccountCreatorDialog(QDialog):
         self.amount = 1
         self.options: dict = {}
         self.setWindowTitle("Account Creator")
-        self.setFixedSize(540, 340)
+        self.setFixedSize(560, 420)
         self.setStyleSheet(_DLG_STYLE + f"""
             QTabWidget::pane {{
                 background: {PANEL};
@@ -9559,11 +9937,59 @@ class _AccountCreatorDialog(QDialog):
         self._creator_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         password_row.addWidget(self._creator_password_edit, 1)
         advanced_lay.addLayout(password_row)
+
+        suffix_row = QHBoxLayout()
+        suffix_label = QLabel("After Prefix Add")
+        suffix_label.setFixedWidth(105)
+        suffix_label.setToolTip("What the 6 random characters after your prefix are made of")
+        suffix_row.addWidget(suffix_label)
+        self._suffix_combo = QComboBox()
+        self._suffix_combo.addItem("Numbers (alts_482913)", "numbers")
+        self._suffix_combo.addItem("Letters (alts_QmTzkA)", "letters")
+        self._suffix_combo.addItem("Numbers + Letters (alts_a8Kz3Q)", "mixed")
+        saved_suffix = str(actions.get_ui_setting("creator_suffix_type", "numbers") or "numbers")
+        self._suffix_combo.setCurrentIndex(max(0, self._suffix_combo.findData(saved_suffix)))
+        self._suffix_combo.setEnabled(False)
+        suffix_row.addWidget(self._suffix_combo, 1)
+        advanced_lay.addLayout(suffix_row)
+
+        # Amount and wait are mirrored here so they can be set without
+        # switching back to Basic; both tabs stay in sync.
+        adv_amount_row = QHBoxLayout()
+        adv_amount_lbl = QLabel("Amount")
+        adv_amount_lbl.setFixedWidth(105)
+        adv_amount_row.addWidget(adv_amount_lbl)
+        self._adv_amount_spin = QSpinBox()
+        self._adv_amount_spin.setRange(1, account_creator_mod.MAX_CREATOR_ACCOUNTS)
+        self._adv_amount_spin.setValue(self._amount_spin.value())
+        self._adv_amount_spin.setFixedSize(90, 28)
+        self._adv_amount_spin.setStyleSheet(_spin_style)
+        self._adv_amount_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        adv_amount_row.addWidget(self._adv_amount_spin)
+        adv_amount_row.addSpacing(16)
+        adv_wait_lbl = QLabel("Wait")
+        adv_amount_row.addWidget(adv_wait_lbl)
+        self._adv_interval_spin = QSpinBox()
+        self._adv_interval_spin.setRange(0, account_creator_mod.MAX_INTERVAL_SECONDS)
+        self._adv_interval_spin.setSuffix(" sec")
+        self._adv_interval_spin.setValue(self._interval_spin.value())
+        self._adv_interval_spin.setFixedSize(90, 28)
+        self._adv_interval_spin.setStyleSheet(_spin_style)
+        self._adv_interval_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        adv_amount_row.addWidget(self._adv_interval_spin)
+        adv_amount_row.addStretch(1)
+        advanced_lay.addLayout(adv_amount_row)
         advanced_lay.addStretch(1)
+
+        for a, b in ((self._amount_spin, self._adv_amount_spin),
+                     (self._interval_spin, self._adv_interval_spin)):
+            a.valueChanged.connect(lambda v, other=b: other.value() != v and other.setValue(v))
+            b.valueChanged.connect(lambda v, other=a: other.value() != v and other.setValue(v))
 
         self._enable_prefix_chk.toggled.connect(
             self._username_prefix_edit.setEnabled
         )
+        self._enable_prefix_chk.toggled.connect(self._suffix_combo.setEnabled)
         tabs.addTab(advanced_page, "Advanced")
 
         lay.addWidget(tabs, 1)
@@ -9612,7 +10038,9 @@ class _AccountCreatorDialog(QDialog):
             "prefix": prefix,
             "password": password,
             "interval_seconds": self._interval_spin.value(),
+            "suffix_type": self._suffix_combo.currentData() or "numbers",
         }
+        actions.save_ui_setting("creator_suffix_type", self.options["suffix_type"])
         self.accept()
 
 

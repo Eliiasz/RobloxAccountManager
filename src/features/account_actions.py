@@ -201,6 +201,59 @@ def _wait_between_launches(
     time.sleep(delay)
 
 
+def _run_launch_batch(
+    usernames: list[str],
+    launch_one: Callable[[str, bool], OperationResult],
+    launch_delay: float,
+    label: str,
+) -> tuple[int, list[tuple[str, OperationResult]], list[tuple[str, OperationResult]]]:
+    """Launch every account and collect results in list order.
+
+    Launch Delay 0 means "all at once": every account is sent in parallel and
+    their startups are confirmed side by side instead of one after another.
+    Any other delay keeps the one-by-one behaviour with that wait in between.
+    """
+    results: dict[str, OperationResult] = {}
+
+    def _one(u: str, parallel: bool) -> None:
+        try:
+            result = ensure_result(launch_one(u, parallel))
+        except Exception as exc:
+            print(f"[ERROR] {label} {u}: {exc}")
+            result = unexpected_result(f"{label} with {u}", exc)
+        results[u] = result
+        print(f"[{'SUCCESS' if result else 'ERROR'}] {label} {u}: {'OK' if result else 'FAIL'}")
+
+    if launch_delay <= 0 and len(usernames) > 1:
+        print(f"[INFO] {label}: launching {len(usernames)} accounts at the same time")
+        threads = [
+            threading.Thread(target=_one, args=(u, True), daemon=True, name=f"launch-{u}")
+            for u in usernames
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    else:
+        for index, u in enumerate(usernames):
+            _one(u, False)
+            if index < len(usernames) - 1:
+                _wait_between_launches(index, len(usernames), launch_delay, usernames[index + 1])
+
+    success = 0
+    failures: list[tuple[str, OperationResult]] = []
+    successful_launches: list[tuple[str, OperationResult]] = []
+    for u in usernames:
+        result = results.get(u) or OperationResult.failure(
+            "ROBLOX_LAUNCH_FAILED", "Roblox Could Not Start", "Roblox could not be launched.")
+        if result:
+            success += 1
+            successful_launches.append((u, result))
+        else:
+            failures.append((u, result))
+    return success, failures, successful_launches
+
+
 def join_place(manager, username: str, place_id: str, private_server_key: str = "", on_done: Callable[[bool, str], None] = lambda *_: None) -> None:
     S = load_ui_settings()
     launcher = S.get("roblox_launcher", "default")
@@ -231,33 +284,13 @@ def join_place_all(manager, usernames: list[str], place_id: str, private_server_
     launch_delay = get_launch_delay_seconds(S)
     print(f"[INFO] join_place_all: {len(usernames)} accounts -> place {place_id}")
     def _worker():
-        success = 0
-        failures: list[tuple[str, OperationResult]] = []
-        successful_launches: list[tuple[str, OperationResult]] = []
-        for index, u in enumerate(usernames):
-            try:
-                result = ensure_result(manager.launch_roblox(
-                    u, place_id,
-                    private_server_id=private_server_key or "",
-                    launcher_preference=launcher,
-                    custom_launcher_path=custom_path,
-                ))
-                if result:
-                    success += 1
-                    successful_launches.append((u, result))
-                else:
-                    failures.append((u, result))
-                print(f"[{'SUCCESS' if result else 'ERROR'}] join_place_all {u}: {'OK' if result else 'FAIL'}")
-            except Exception as exc:
-                print(f"[ERROR] join_place_all {u}: {exc}")
-                failures.append((u, unexpected_result(f"Joining place for {u}", exc)))
-            if index < len(usernames) - 1:
-                _wait_between_launches(
-                    index,
-                    len(usernames),
-                    launch_delay,
-                    usernames[index + 1],
-                )
+        success, failures, successful_launches = _run_launch_batch(
+            usernames,
+            lambda u, parallel: manager.launch_roblox(u, place_id, private_server_id=private_server_key or "", launcher_preference=launcher, custom_launcher_path=custom_path, parallel=parallel),
+            launch_delay,
+            "join_place_all",
+        )
+
         result = _batch_launch_result(
             "Joined",
             len(usernames),
@@ -416,48 +449,12 @@ def launch_home(manager, username: str | list[str], on_done: Callable[[bool, str
                 on_done(False, result)
             return
 
-        success = 0
-        failures: list[tuple[str, OperationResult]] = []
-        successful_launches: list[tuple[str, OperationResult]] = []
-        for index, account in enumerate(usernames):
-            try:
-                result = ensure_result(
-                    manager.launch_roblox(
-                        account,
-                        "",
-                        "",
-                        launcher_preference=launcher,
-                        custom_launcher_path=custom_path,
-                    ),
-                    failure_code="ROBLOX_LAUNCH_FAILED",
-                    failure_title="Roblox Could Not Start",
-                    failure_message="Roblox could not be launched.",
-                )
-                if result:
-                    success += 1
-                    successful_launches.append((account, result))
-                else:
-                    failures.append((account, result))
-                print(
-                    f"[{'SUCCESS' if result else 'ERROR'}] "
-                    f"launch_home {account}: {'OK' if result else 'FAIL'}"
-                )
-            except Exception as exc:
-                print(f"[ERROR] launch_home {account}: {exc}")
-                failures.append((
-                    account,
-                    unexpected_result(
-                        f"Launching Roblox Home for {account}",
-                        exc,
-                    ),
-                ))
-            if index < len(usernames) - 1:
-                _wait_between_launches(
-                    index,
-                    len(usernames),
-                    launch_delay,
-                    usernames[index + 1],
-                )
+        success, failures, successful_launches = _run_launch_batch(
+            usernames,
+            lambda u, parallel: manager.launch_roblox(u, "", "", launcher_preference=launcher, custom_launcher_path=custom_path, parallel=parallel),
+            launch_delay,
+            "launch_home",
+        )
 
         result = _batch_launch_result(
             "Launched Roblox Home for",
@@ -539,34 +536,13 @@ def join_user(manager, usernames: list[str] | str, target_username: str, on_done
             launcher = S.get("roblox_launcher", "default")
             custom_path = S.get("custom_roblox_launcher_path", "")
 
-            success = 0
-            failures: list[tuple[str, OperationResult]] = []
-            successful_launches: list[tuple[str, OperationResult]] = []
             launch_delay = get_launch_delay_seconds(S)
-            for index, u in enumerate(usernames):
-                try:
-                    result = ensure_result(manager.launch_roblox(
-                        u, place_id,
-                        job_id=game_id,
-                        launcher_preference=launcher,
-                        custom_launcher_path=custom_path,
-                    ))
-                    if result:
-                        success += 1
-                        successful_launches.append((u, result))
-                    else:
-                        failures.append((u, result))
-                    print(f"[{'SUCCESS' if result else 'ERROR'}] join_user {u}: {'OK' if result else 'FAIL'}")
-                except Exception as exc:
-                    print(f"[ERROR] join_user {u}: {exc}")
-                    failures.append((u, unexpected_result(f"Joining user with {u}", exc)))
-                if index < len(usernames) - 1:
-                    _wait_between_launches(
-                        index,
-                        len(usernames),
-                        launch_delay,
-                        usernames[index + 1],
-                    )
+            success, failures, successful_launches = _run_launch_batch(
+                usernames,
+                lambda u, parallel: manager.launch_roblox(u, place_id, job_id=game_id, launcher_preference=launcher, custom_launcher_path=custom_path, parallel=parallel),
+                launch_delay,
+                "join_user",
+            )
 
             result = _batch_launch_result(
                 "Joined",
@@ -595,33 +571,13 @@ def join_job_id(manager, usernames: list[str] | str, place_id: str, job_id: str,
     print(f"[INFO] join_job_id: {len(usernames)} accounts -> place {place_id} job {job_id}")
 
     def _worker():
-        success = 0
-        failures: list[tuple[str, OperationResult]] = []
-        successful_launches: list[tuple[str, OperationResult]] = []
-        for index, u in enumerate(usernames):
-            try:
-                result = ensure_result(manager.launch_roblox(
-                    u, place_id,
-                    job_id=job_id,
-                    launcher_preference=launcher,
-                    custom_launcher_path=custom_path,
-                ))
-                if result:
-                    success += 1
-                    successful_launches.append((u, result))
-                else:
-                    failures.append((u, result))
-                print(f"[{'SUCCESS' if result else 'ERROR'}] join_job_id {u}: {'OK' if result else 'FAIL'}")
-            except Exception as exc:
-                print(f"[ERROR] join_job_id {u}: {exc}")
-                failures.append((u, unexpected_result(f"Joining Job ID with {u}", exc)))
-            if index < len(usernames) - 1:
-                _wait_between_launches(
-                    index,
-                    len(usernames),
-                    launch_delay,
-                    usernames[index + 1],
-                )
+        success, failures, successful_launches = _run_launch_batch(
+            usernames,
+            lambda u, parallel: manager.launch_roblox(u, place_id, job_id=job_id, launcher_preference=launcher, custom_launcher_path=custom_path, parallel=parallel),
+            launch_delay,
+            "join_job_id",
+        )
+
         result = _batch_launch_result(
             "Joined",
             len(usernames),
@@ -670,33 +626,12 @@ def join_small_server(manager, usernames: list[str] | str, place_id: str, on_don
             custom_path = S.get("custom_roblox_launcher_path", "")
             launch_delay = get_launch_delay_seconds(S)
 
-            success = 0
-            failures: list[tuple[str, OperationResult]] = []
-            successful_launches: list[tuple[str, OperationResult]] = []
-            for index, u in enumerate(usernames):
-                try:
-                    result = ensure_result(manager.launch_roblox(
-                        u, place_id,
-                        job_id=job_id,
-                        launcher_preference=launcher,
-                        custom_launcher_path=custom_path,
-                    ))
-                    if result:
-                        success += 1
-                        successful_launches.append((u, result))
-                    else:
-                        failures.append((u, result))
-                    print(f"[{'SUCCESS' if result else 'ERROR'}] join_small_server {u}: {'OK' if result else 'FAIL'}")
-                except Exception as exc:
-                    print(f"[ERROR] join_small_server {u}: {exc}")
-                    failures.append((u, unexpected_result(f"Joining small server with {u}", exc)))
-                if index < len(usernames) - 1:
-                    _wait_between_launches(
-                        index,
-                        len(usernames),
-                        launch_delay,
-                        usernames[index + 1],
-                    )
+            success, failures, successful_launches = _run_launch_batch(
+                usernames,
+                lambda u, parallel: manager.launch_roblox(u, place_id, job_id=job_id, launcher_preference=launcher, custom_launcher_path=custom_path, parallel=parallel),
+                launch_delay,
+                "join_small_server",
+            )
 
             result = _batch_launch_result(
                 "Joined",
@@ -901,7 +836,7 @@ def get_browser_result() -> OperationResult:
     return browsers_mod.resolve_browser(browser_type)
 
 
-def add_account_browser(manager, on_done: Callable[[bool, str], None] = lambda *_: None, javascript: str = "") -> None:
+def add_account_browser(manager, on_done: Callable[[bool, str], None] = lambda *_: None, javascript: str = "", center_window: bool = False) -> None:
     browser_result = get_browser_result()
     if not browser_result:
         on_done(False, browser_result)
@@ -914,6 +849,7 @@ def add_account_browser(manager, on_done: Callable[[bool, str], None] = lambda *
             result = ensure_result(manager.add_account(
                 javascript=javascript or "",
                 browser=browser,
+                center_window=center_window,
             ))
             if result:
                 new_names = set(manager.accounts.keys()) - existing_before
@@ -982,7 +918,7 @@ QUICK_SIGN_IN_SCRIPT = r"""
 def add_account_quick_sign_in(manager, on_done: Callable[[bool, str], None] = lambda *_: None) -> None:
     """Browser login that jumps straight to Roblox Quick Sign-in."""
     print("[INFO] Quick Sign-in: opening the login page, enter the code on your other device.")
-    add_account_browser(manager, on_done=on_done, javascript=QUICK_SIGN_IN_SCRIPT)
+    add_account_browser(manager, on_done=on_done, javascript=QUICK_SIGN_IN_SCRIPT, center_window=True)
 
 
 # Anti-AFK

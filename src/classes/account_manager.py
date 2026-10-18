@@ -813,7 +813,7 @@ class RobloxAccountManager:
             print(f"[ERROR] Error extracting user info: {e}")
             return None, None, None, None, ""
     
-    def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", javascript_list=None, browser=None, browser_path=None, password_list=None, window_slot=None, window_slot_count=None):
+    def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", javascript_list=None, browser=None, browser_path=None, password_list=None, window_slot=None, window_slot_count=None, center_window=False):
         # Add accounts through one or more browser instances.
         # javascript_list and password_list map each value to the same browser index.
         if javascript_list:
@@ -865,6 +865,13 @@ class RobloxAccountManager:
                 x = col * (screen_width // grid_cols) + 10
                 y = row * ((screen_height - 100) // grid_rows) + 10
                 
+                if center_window and amount == 1:
+                    # Quick Sign-in: always the same spot, centred and tall
+                    # enough to show the whole code screen.
+                    window_width, window_height = 540, 760
+                    x = max(0, (screen_width - window_width) // 2)
+                    y = max(0, (screen_height - window_height) // 2 - 20)
+
                 driver.set_window_position(x, y)
                 driver.set_window_size(window_width, window_height)
                 
@@ -1127,8 +1134,28 @@ class RobloxAccountManager:
         print(f"[ERROR] Account '{username}' not found")
         return False
     
-    def launch_roblox(self, username, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path=""):
+    _BLOCKING_CONFIRM_CODES = (
+        "ROBLOX_SECURITY_CHALLENGE", "ROBLOX_ACCOUNT_MISMATCH",
+        "ROBLOX_LAUNCH_UNCONFIRMED", "LAUNCH_IDENTITY_AMBIGUOUS",
+        "LAUNCH_EVIDENCE_MISSING", "LAUNCH_ACCOUNT_ID_MISSING",
+    )
+
+    def _confirm(self, result, session, before, username):
+        confirmed = launch_monitor.confirm_launch(result, session, before, username)
+        if not confirmed and confirmed.code in self._BLOCKING_CONFIRM_CODES:
+            # Batch, WebSocket and Auto-Rejoin must not send more tickets
+            # while authentication remains unresolved in this session.
+            session["launch_blocked"] = confirmed
+        return confirmed
+
+    def launch_roblox(self, username, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path="", parallel=False):
         # All entry points (batch, Auto-Rejoin and WebSocket) share this gate.
+        # parallel=True (Launch Delay 0) holds the gate only while the launch is
+        # sent, then confirms the client outside it so several clients start at
+        # once. Each client is still matched by its own launch tracker. Handle64
+        # mode keeps the one-at-a-time path because each client's handles must be
+        # cleared before the next starts.
+        deferred = None
         with launch_monitor.LAUNCH_LOCK:
             session = account_actions._mr_handle if account_actions.is_multi_roblox_running() else None
             if session is not None:
@@ -1143,17 +1170,13 @@ class RobloxAccountManager:
                 job_id, custom_launcher_path,
             )
             if result and session is not None:
-                confirmed = launch_monitor.confirm_launch(result, session, before, username)
-                if not confirmed and confirmed.code in (
-                    "ROBLOX_SECURITY_CHALLENGE", "ROBLOX_ACCOUNT_MISMATCH",
-                    "ROBLOX_LAUNCH_UNCONFIRMED", "LAUNCH_IDENTITY_AMBIGUOUS",
-                    "LAUNCH_EVIDENCE_MISSING", "LAUNCH_ACCOUNT_ID_MISSING",
-                ):
-                    # Batch, WebSocket and Auto-Rejoin must not send more tickets
-                    # while authentication remains unresolved in this session.
-                    session["launch_blocked"] = confirmed
-                return confirmed
-            return result
+                if parallel and session.get("mode") != "handle64":
+                    deferred = (result, session, before)
+                else:
+                    return self._confirm(result, session, before, username)
+            else:
+                return result
+        return self._confirm(*deferred[:2], deferred[2], username)
 
     def _launch_roblox(self, username, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path=""):
         """Launch Roblox game with specified account"""

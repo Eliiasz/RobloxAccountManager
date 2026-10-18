@@ -346,10 +346,12 @@ class BatchSurvivalTests(unittest.TestCase):
             with self.subTest(entry_point=index):
                 manager = Mock()
                 manager.accounts = {"alice": {"cookie": "TEST"}}
-                manager.launch_roblox.side_effect = [
-                    OperationResult.success(data={"process_identity": (123, 100.0)}),
-                    OperationResult.success(data={"process_identity": (124, 100.0)}),
-                ]
+                # Delay 0 launches in parallel, so hand out results by account, not call order.
+                by_account = {
+                    "alice": OperationResult.success(data={"process_identity": (123, 100.0)}),
+                    "bob": OperationResult.success(data={"process_identity": (124, 100.0)}),
+                }
+                manager.launch_roblox.side_effect = lambda account, *args, **kwargs: by_account[account]
                 finished = threading.Event()
                 results = []
 
@@ -377,6 +379,30 @@ class BatchSurvivalTests(unittest.TestCase):
                 self.assertIn("1/2", results[0].message)
                 self.assertIn("alice: ROBLOX_CLIENT_EXITED", results[0].detail)
                 self.assertNotIn("bob:", results[0].detail)
+
+
+class ParallelLaunchTests(unittest.TestCase):
+    def test_zero_delay_starts_accounts_together(self):
+        started = []
+        gate = threading.Barrier(3, timeout=5)
+
+        def launch_one(account, parallel):
+            started.append((account, parallel))
+            gate.wait()  # only passes if all three are running at the same time
+            return OperationResult.success()
+
+        success, failures, _ = actions._run_launch_batch(["a", "b", "c"], launch_one, 0, "test")
+        self.assertEqual(success, 3)
+        self.assertEqual(failures, [])
+        self.assertTrue(all(parallel for _, parallel in started))
+
+    def test_delay_keeps_one_by_one_order(self):
+        order = []
+        with patch.object(actions.time, "sleep"):
+            success, _, _ = actions._run_launch_batch(
+                ["a", "b"], lambda u, parallel: order.append((u, parallel)) or OperationResult.success(), 2, "test")
+        self.assertEqual(success, 2)
+        self.assertEqual(order, [("a", False), ("b", False)])
 
 
 class HandleReadinessTests(unittest.TestCase):

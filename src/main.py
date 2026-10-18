@@ -58,7 +58,7 @@ def resolve_icon_path() -> str | None:
 def _set_app_user_model_id():
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "evanovar.robloxaccountmanager.ram"
+            "anane.robloxaccountmanager.ram"
         )
     except Exception:
         pass

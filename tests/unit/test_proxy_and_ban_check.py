@@ -100,5 +100,37 @@ class BanCheckTests(unittest.TestCase):
         self.assertNotIn(r.status, health.PROBLEM_STATUSES)
 
 
+class ParallelBanCheckTests(unittest.TestCase):
+    def test_all_accounts_checked_with_retry_after_rate_limit(self):
+        import threading
+        from unittest.mock import patch
+
+        calls = {"n": 0}
+        lock = threading.Lock()
+
+        def fake(username, data, session):
+            with lock:
+                calls["n"] += 1
+                first_hit = calls["n"] == 5
+            if first_hit:
+                raise health._RateLimited()
+            return health.HealthResult(username, health.OK)
+
+        manager = type("M", (), {"accounts": {f"a{i}": {"cookie": "c"} for i in range(40)}})()
+        done = threading.Event()
+        summary = {}
+        with patch.object(health, "check_account", side_effect=fake), \
+                patch.object(health, "_RATE_LIMIT_PAUSE", 0.05):
+            checker = health.AccountHealthChecker(
+                manager, on_result=lambda *a: None,
+                on_done=lambda s: (summary.update(s), done.set()),
+                delay_sec=0.5, workers=6,
+            )
+            checker.start()
+            self.assertTrue(done.wait(20))
+        self.assertEqual(summary["checked"], 40)
+        self.assertEqual(summary["counts"][health.OK], 40)
+
+
 if __name__ == "__main__":
     unittest.main()

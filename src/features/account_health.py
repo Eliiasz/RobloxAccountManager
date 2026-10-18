@@ -45,6 +45,9 @@ _USER_URL = "https://users.roblox.com/v1/users/{user_id}"
 _ATTEMPTS = 2
 _RETRY_DELAY = 0.75
 DEFAULT_DELAY = 1.5
+DEFAULT_WORKERS = 8          # accounts checked at the same time
+_RATE_LIMIT_PAUSE = 20.0      # seconds every worker waits after an HTTP 429
+_MAX_RATE_LIMIT_RETRIES = 4
 
 
 @dataclass
@@ -165,9 +168,10 @@ def check_account(username: str, data: dict, session: requests.Session) -> Healt
         punishment = _moderation(session, cookie)
         if punishment:
             return HealthResult(username, BANNED, _describe_punishment(punishment), user_id, punishment)
-        if _is_terminated(session, user_id):
-            return HealthResult(username, TERMINATED, "Account is terminated.", user_id)
         if punishment is None:
+            # Moderation status unreadable: fall back to the public profile.
+            if _is_terminated(session, user_id):
+                return HealthResult(username, TERMINATED, "Account is terminated.", user_id)
             return HealthResult(username, OK, "Signed in (ban status could not be read).", user_id)
         return HealthResult(username, OK, "Signed in, no moderation.", user_id)
 
@@ -191,12 +195,14 @@ class AccountHealthChecker:
         on_done: Callable[[dict], None],
         delay_sec: float = DEFAULT_DELAY,
         usernames: list[str] | None = None,
+        workers: int = DEFAULT_WORKERS,
     ):
         self._manager = manager
         self._on_result = on_result
         self._on_done = on_done
         self._delay = max(0.5, float(delay_sec))
         self._usernames = usernames
+        self._workers = max(1, int(workers))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -231,35 +237,84 @@ class AccountHealthChecker:
         total = len(accounts)
         counts = {key: 0 for key in LABELS}
         stopped_reason = ""
-        session = requests.Session()
-        try:
-            for index, (username, data) in enumerate(accounts, start=1):
-                if self._stop.is_set():
-                    stopped_reason = "Stopped."
-                    break
-                try:
-                    result = check_account(username, data, session)
-                except _RateLimited:
-                    result = HealthResult(username, UNKNOWN, "Rate limited by Roblox (HTTP 429).")
-                    stopped_reason = "Roblox rate limited the scan. Wait a minute and scan again."
-                    self._stop.set()
-                except Exception as exc:  # never let one account kill the scan
-                    result = HealthResult(username, UNKNOWN, f"{type(exc).__name__}: {exc}")
-                counts[result.status] = counts.get(result.status, 0) + 1
-                if result.status in PROBLEM_STATUSES:
-                    print(f"[WARNING] Ban check: {username} is {result.label}. {result.detail}")
-                try:
-                    self._on_result(result, index, total)
-                except Exception as exc:
-                    print(f"[WARNING] account_health on_result error: {exc}")
-                if self._stop.is_set():
-                    break
-                self._stop.wait(timeout=self._delay)
-        finally:
-            session.close()
-        summary = {"total": total, "counts": counts, "stopped": stopped_reason}
+        lock = threading.Lock()
+        done = [0]
+        pause_until = [0.0]
+        queue = list(enumerate(accounts))
+        queue.reverse()
+        workers = max(1, min(self._workers, total or 1))
+        # Per-worker spacing keeps the overall request rate polite even with
+        # several workers.
+        spacing = max(0.15, self._delay / workers)
+
+        def _wait_out_pause() -> bool:
+            while not self._stop.is_set():
+                with lock:
+                    remaining = pause_until[0] - time.monotonic()
+                if remaining <= 0:
+                    return True
+                self._stop.wait(min(remaining, 1.0))
+            return False
+
+        def _worker() -> None:
+            nonlocal stopped_reason
+            session = requests.Session()
+            try:
+                while not self._stop.is_set():
+                    with lock:
+                        if not queue:
+                            return
+                        _index, (username, data) = queue.pop()
+                    attempts = 0
+                    while True:
+                        if not _wait_out_pause():
+                            return
+                        try:
+                            result = check_account(username, data, session)
+                            break
+                        except _RateLimited:
+                            attempts += 1
+                            with lock:
+                                pause_until[0] = max(pause_until[0], time.monotonic() + _RATE_LIMIT_PAUSE)
+                            print(f"[WARNING] Ban check: Roblox rate limited, pausing {_RATE_LIMIT_PAUSE:.0f}s")
+                            if attempts > _MAX_RATE_LIMIT_RETRIES:
+                                result = HealthResult(username, UNKNOWN, "Rate limited by Roblox (HTTP 429).")
+                                break
+                        except Exception as exc:  # never let one account kill the scan
+                            result = HealthResult(username, UNKNOWN, f"{type(exc).__name__}: {exc}")
+                            break
+                    with lock:
+                        counts[result.status] = counts.get(result.status, 0) + 1
+                        done[0] += 1
+                        index = done[0]
+                    if result.status in PROBLEM_STATUSES:
+                        print(f"[WARNING] Ban check: {username} is {result.label}. {result.detail}")
+                    try:
+                        self._on_result(result, index, total)
+                    except Exception as exc:
+                        print(f"[WARNING] account_health on_result error: {exc}")
+                    if self._stop.wait(timeout=spacing):
+                        return
+            finally:
+                session.close()
+
+        started = time.monotonic()
+        threads = [
+            threading.Thread(target=_worker, daemon=True, name=f"AccountHealth-{i + 1}")
+            for i in range(workers)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if self._stop.is_set() and done[0] < total:
+            stopped_reason = "Stopped."
+        summary = {
+            "total": total, "checked": done[0], "counts": counts,
+            "stopped": stopped_reason, "seconds": time.monotonic() - started,
+        }
         print(
-            "[INFO] Ban check complete: "
+            f"[INFO] Ban check complete in {summary['seconds']:.0f}s: "
             + ", ".join(f"{LABELS[k]} {v}" for k, v in counts.items() if v)
         )
         try:
