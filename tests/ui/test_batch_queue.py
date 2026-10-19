@@ -69,6 +69,15 @@ class BatchQueueTests(unittest.TestCase):
         w._on_queue_poll(0)
         self.assertEqual(w.sent, [["c", "d"]])
 
+    def test_pressing_next_batch_twice_only_opens_one_batch(self):
+        w, _ = _window()
+        w._on_queue_poll(2)
+        w._on_queue_next_clicked()
+        w._on_queue_next_clicked()
+        w._on_kill_all_roblox.assert_called_once()
+        w._on_queue_poll(0)
+        self.assertEqual(w.sent, [["c", "d"]])
+
     def test_small_selection_skips_queue(self):
         w, _ = _window(size=10)
         self.assertIsNone(w._launch_queue)

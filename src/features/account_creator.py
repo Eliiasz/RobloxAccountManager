@@ -271,8 +271,19 @@ def create_accounts(
     manager,
     amount: int,
     options: dict | None = None,
-    on_done: Callable[[bool, str], None] = lambda *_: None,
+    on_done: Callable[..., None] = lambda *_: None,
+    stop_event: threading.Event | None = None,
+    on_progress: Callable[[int, int, int], None] | None = None,
 ) -> None:
+    """Create accounts in the background.
+
+    on_done(success, message, report) gets a report dict when the run started:
+    requested, created (names), failures (code/message), stopped.
+    stop_event: when set, no new account is started; signups already open
+    in a browser are left to finish (or the user closes that window).
+    on_progress(created, finished, requested) after each attempt.
+    """
+    stop_event = stop_event or threading.Event()
     try:
         requested_amount = int(amount)
     except (TypeError, ValueError):
@@ -350,11 +361,24 @@ def create_accounts(
                             f"[Account Creator] Waiting {wait:.0f}s before "
                             f"account {index + 1}/{requested_amount}."
                         )
-                        time.sleep(wait)
+                        stop_event.wait(wait)  # wakes up at once when Stop is pressed
                     next_start[0] = time.monotonic() + interval
+
+            finished = [0]
+
+            def _report_progress() -> None:
+                if on_progress is None:
+                    return
+                try:
+                    created_now = len(set(manager.accounts.keys()) - existing_before)
+                    on_progress(created_now, finished[0], requested_amount)
+                except Exception:
+                    pass
 
             def _browser_slot(slot_index: int):
                 while True:
+                    if stop_event.is_set():
+                        return
                     try:
                         index, profile = pending_profiles.get_nowait()
                     except Empty:
@@ -362,6 +386,8 @@ def create_accounts(
 
                     try:
                         _wait_for_turn(index)
+                        if stop_event.is_set():
+                            continue
                         print(
                             f"[Account Creator] Slot {slot_index + 1} starting "
                             f"account {index + 1}/{requested_amount}."
@@ -380,7 +406,13 @@ def create_accounts(
                                 failure_results.append(result)
                     except Exception as e:
                         print(f"[Account Creator] Browser slot failed: {e}")
+                        with failure_lock:
+                            failure_results.append(OperationResult.failure(
+                                "ACCOUNT_CREATOR_ERROR", "Account Creator", str(e)))
                     finally:
+                        with failure_lock:
+                            finished[0] += 1
+                        _report_progress()
                         pending_profiles.task_done()
 
             slot_threads = [
@@ -398,6 +430,18 @@ def create_accounts(
                 slot_thread.join()
 
             new_names = sorted(set(manager.accounts.keys()) - existing_before)
+            stopped = stop_event.is_set()
+            report = {
+                "requested": requested_amount,
+                "created": new_names,
+                "failures": [{"code": r.code, "message": r.message} for r in failure_results],
+                "stopped": stopped,
+            }
+            if stopped:
+                print(f"[Account Creator] Stopped. {len(new_names)} account(s) were created.")
+            if new_names or stopped:
+                on_done(bool(new_names), f"Created {len(new_names)}/{requested_amount} account(s).", report)
+                return
             if new_names:
                 name_preview = ", ".join(new_names[:10])
                 if len(new_names) > 10:
@@ -414,12 +458,14 @@ def create_accounts(
                         False,
                         f"{first_failure.message}\n\n"
                         f"Error code: {first_failure.code}",
+                        report,
                     )
                 else:
                     on_done(
                         False,
                         "No accounts were created. Complete any CAPTCHA shown "
                         "in the browser and try again if the signup timed out.",
+                        report,
                     )
         except Exception as e:
             print(f"[Account Creator] Failed: {e}")

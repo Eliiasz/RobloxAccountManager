@@ -13,40 +13,67 @@ def _window(queue):
         _launch_queue=queue,
         _update_queue_status=Mock(),
         _poll_queue=Mock(),
+        QUEUE_RETRY_SETTING=ui.AccountManagerUIQt.QUEUE_RETRY_SETTING,
+        _QUEUE_COOLDOWN=ui.AccountManagerUIQt._QUEUE_COOLDOWN,
     )
+    window._queue_retry_limit = ui.AccountManagerUIQt._queue_retry_limit.__get__(window)
     window._note_queue_failures = ui.AccountManagerUIQt._note_queue_failures.__get__(window)
     return window
 
 
-def _queue():
-    return {"failed": [], "phase": "starting", "phase_since": time.monotonic(), "empty_polls": 0}
+def _queue(remaining=None):
+    return {"failed": [], "security": [], "attempts": {}, "ever_failed": set(), "remaining": list(remaining or []),
+            "size": 2, "batch": 1, "batches": 3, "paused": False, "phase": "starting",
+            "phase_since": time.monotonic(), "empty_polls": 0}
 
 
 class QueueFailedAccountsTests(unittest.TestCase):
-    def failure(self, failed, batch):
-        return OperationResult(False, code="ROBLOX_LAUNCH_FAILED", message="x",
-                               data={"failed": failed, "batch": batch})
+    def failure(self, failed, batch, codes):
+        return OperationResult(False, code="PARTIAL_LAUNCH_FAILURE", message="x",
+                               data={"failed": failed, "batch": batch, "failed_codes": codes})
 
-    def test_failed_accounts_are_collected_without_a_popup_when_enabled(self):
+    def test_installer_failures_are_retried_at_the_end_and_security_checks_are_not(self):
+        window = _window(_queue(remaining=["e"]))
+        with patch.object(ui.actions, "get_ui_setting", return_value=2):
+            window._note_queue_failures(self.failure(
+                ["a", "b"], ["a", "b", "c"],
+                {"a": "ROBLOX_LAUNCH_FAILED", "b": actions.SECURITY_CHECK_CODE}))
+        q = window._launch_queue
+        self.assertEqual(q["remaining"], ["e", "a"])
+        self.assertEqual(q["security"], ["b"])
+        self.assertEqual(q["failed"], [])
+        self.assertEqual(q["phase"], "starting")
+
+    def test_retries_stop_after_the_limit(self):
         window = _window(_queue())
-        with patch.object(ui.actions, "load_ui_settings", return_value={"queue_select_failed": True}):
-            self.assertTrue(window._note_queue_failures(self.failure(["a", "b"], ["a", "b", "c"])))
-            self.assertTrue(window._note_queue_failures(self.failure(["b", "d"], ["d", "e"])))
-        self.assertEqual(window._launch_queue["failed"], ["a", "b", "d"])
-        self.assertEqual(window._launch_queue["phase"], "starting")
+        with patch.object(ui.actions, "get_ui_setting", return_value=1):
+            for _ in range(2):
+                window._launch_queue["phase"] = "running"
+                window._note_queue_failures(self.failure(["a"], ["a", "b"], {"a": "ROBLOX_CLIENT_EXITED"}))
+        self.assertEqual(window._launch_queue["remaining"], ["a"])
+        self.assertEqual(window._launch_queue["failed"], ["a"])
 
-    def test_a_batch_that_fully_failed_moves_the_queue_on(self):
+    def test_a_batch_that_fully_failed_with_roblox_trouble_waits_then_continues(self):
         window = _window(_queue())
-        with patch.object(ui.actions, "load_ui_settings", return_value={"queue_select_failed": True}):
-            window._note_queue_failures(self.failure(["a", "b"], ["a", "b"]))
-        self.assertEqual(window._launch_queue["phase"], "waiting")
-        window._poll_queue.assert_called_once_with()
+        with patch.object(ui.actions, "get_ui_setting", return_value=2):
+            window._note_queue_failures(self.failure(["a", "b"], ["a", "b"],
+                                                     {"a": "ROBLOX_LAUNCH_FAILED", "b": "NETWORK_TIMEOUT"}))
+        q = window._launch_queue
+        self.assertEqual(q["phase"], "waiting")
+        self.assertFalse(q["paused"])
+        self.assertGreater(q["cooldown_until"], time.monotonic())
 
-    def test_nothing_changes_when_the_option_is_off_or_no_queue_runs(self):
-        with patch.object(ui.actions, "load_ui_settings", return_value={}):
-            self.assertFalse(_window(_queue())._note_queue_failures(self.failure(["a"], ["a"])))
-        with patch.object(ui.actions, "load_ui_settings", return_value={"queue_select_failed": True}):
-            self.assertFalse(_window(None)._note_queue_failures(self.failure(["a"], ["a"])))
+    def test_a_batch_that_fully_failed_for_another_reason_pauses_instead_of_racing(self):
+        window = _window(_queue())
+        with patch.object(ui.actions, "get_ui_setting", return_value=2):
+            window._note_queue_failures(self.failure(["a", "b"], ["a", "b"],
+                                                     {"a": "LAUNCH_ACCOUNT_ID_MISSING", "b": "LAUNCH_ACCOUNT_ID_MISSING"}))
+        q = window._launch_queue
+        self.assertTrue(q["paused"])
+        self.assertIn("failed right away", q["pause_reason"])
+
+    def test_nothing_is_collected_when_no_queue_runs(self):
+        self.assertFalse(_window(None)._note_queue_failures(self.failure(["a"], ["a"], {})))
 
 
 class BatchResultFailedListTests(unittest.TestCase):
@@ -55,6 +82,7 @@ class BatchResultFailedListTests(unittest.TestCase):
         partial = actions._batch_launch_result("Joined", 3, 1, [("a", bad), ("c", bad)])
         self.assertFalse(partial)
         self.assertEqual(partial.data["failed"], ["a", "c"])
+        self.assertEqual(partial.data["failed_codes"], {"a": "ROBLOX_LAUNCH_UNCONFIRMED", "c": "ROBLOX_LAUNCH_UNCONFIRMED"})
         self.assertIn(actions.LAUNCH_NOT_OPEN_MESSAGE, partial.detail)
         total = actions._batch_launch_result("Joined", 2, 0, [("a", bad), ("b", bad)])
         self.assertEqual(total.data["failed"], ["a", "b"])

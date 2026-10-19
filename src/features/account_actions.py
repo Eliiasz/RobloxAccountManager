@@ -150,7 +150,67 @@ _INSTALLER_NAMES = frozenset({"robloxplayerinstaller.exe", "robloxplayerlauncher
 def _with_failed_accounts(result: OperationResult, failures) -> OperationResult:
     data = dict(result.data) if isinstance(result.data, dict) else {}
     data["failed"] = [username for username, _ in failures]
+    data["failed_codes"] = {username: (failure.code or "") for username, failure in failures}
     return _replace_result(result, data=data)
+
+
+# Batch Queue: failures worth another try later (Roblox installer/updater
+# trouble, network hiccups). A security check is never retried automatically.
+RETRYABLE_LAUNCH_CODES = frozenset({
+    "ROBLOX_LAUNCH_FAILED", "ROBLOX_CLIENT_EXITED", "ROBLOX_LAUNCH_UNCONFIRMED", "ROBLOX_INSTALLER_ERROR",
+    "NETWORK_TIMEOUT", "NETWORK_REQUEST_FAILED", "NETWORK_UNAVAILABLE", "RATE_LIMITED",
+    "AUTH_REQUEST_FAILED", "AUTH_TICKET_MISSING", "PRESENCE_REQUEST_FAILED",
+})
+SECURITY_CHECK_CODE = "ROBLOX_SECURITY_CHALLENGE"
+_ROBLOX_DIALOG_PROCESSES = frozenset({
+    "robloxplayerbeta.exe", "robloxplayerinstaller.exe", "robloxplayerlauncher.exe",
+})
+
+
+def close_roblox_error_windows(keep_pids=()) -> list[str]:
+    """Close Roblox processes that are only showing an error box.
+
+    Roblox shows "Installer encountered a critical error" and similar errors in
+    a standard Windows dialog; a real game window is never one. Such a process
+    never becomes a game, but it keeps counting as "Roblox is running", which
+    stalled the Batch Queue. Returns the titles of the closed windows.
+    """
+    keep = set(keep_pids or ())
+    pids = set()
+    for process in psutil.process_iter(["pid", "name"]):
+        try:
+            if (process.info.get("name") or "").lower() in _ROBLOX_DIALOG_PROCESSES and process.pid not in keep:
+                pids.add(process.pid)
+        except (psutil.Error, AttributeError):
+            continue
+    if not pids:
+        return []
+    found: dict[int, str] = {}
+    pid_of = ctypes.wintypes.DWORD()
+
+    def _check(hwnd, _):
+        try:
+            if not win32gui.IsWindowVisible(hwnd) or win32gui.GetClassName(hwnd) != "#32770":
+                return True
+            ctypes.windll.user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid_of))
+            if pid_of.value in pids:
+                found.setdefault(pid_of.value, win32gui.GetWindowText(hwnd) or "Roblox")
+        except Exception:
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(_check, None)
+    except Exception:
+        return []
+    closed = []
+    for pid, title in found.items():
+        try:
+            psutil.Process(pid).kill()
+            closed.append(title)
+        except psutil.Error:
+            continue
+    return closed
 
 
 def _batch_launch_result(

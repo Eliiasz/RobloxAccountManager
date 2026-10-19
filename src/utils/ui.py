@@ -63,6 +63,7 @@ from classes.roblox_api import RobloxAPI
 
 import features.account_actions as actions
 import features.account_backup as account_backup
+import features.auto_backup as auto_backup_mod
 import features.account_creator as account_creator_mod
 import features.auto_rejoin as ar
 import features.account_filter as account_filter
@@ -353,7 +354,9 @@ class _ActionComboBox(QComboBox):
 # Thread to Qt signal bridge
 class _Bridge(QObject):
     account_added = Signal(object) # OperationResult from add-account worker
-    account_creator_done = Signal(bool, str) # (success, summary) from account creator
+    account_creator_done = Signal(bool, str, object) # (success, summary, report dict or None)
+    account_creator_progress = Signal(int, int, int) # (created, finished, requested)
+    backup_done = Signal(object) # OperationResult from "Backup now"
     game_name_ready = Signal(str) # display text for current-place label
     launch_done = Signal(object) # OperationResult from any join/launch worker
     avatar_ready = Signal(str, object) # (username, image_bytes) from avatar worker
@@ -1747,6 +1750,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge.kill_roblox_done.connect(self._on_kill_roblox_done)
         self._bridge.perf_applied.connect(self._on_perf_applied)
         self._bridge.account_creator_done.connect(self._on_account_creator_done)
+        self._bridge.account_creator_progress.connect(self._on_account_creator_progress)
+        self._bridge.backup_done.connect(self._on_backup_done)
         self._bridge.launch_done.connect(self._on_launch_and_refresh)
         self._bridge.avatar_ready.connect(self._on_avatar_ready)
         self._bridge.rejoin_status.connect(self._on_rejoin_status)
@@ -1855,6 +1860,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge.game_name_ready.connect(self._game_name_label.setText)
         self._bridge.place_icon_ready.connect(self._on_place_icon_ready)
         self._start_running_counter()
+        QTimer.singleShot(8000, self._start_auto_backup)
 
         self._refresh_account_list()
         self._refresh_recent_games()
@@ -4570,6 +4576,21 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._queue_size_edit.setToolTip("Type how many accounts open per batch")
         self._queue_size_edit.textChanged.connect(self._on_queue_size_changed)
         q_row.addWidget(self._queue_size_edit)
+        q_row.addSpacing(16)
+        retry_lbl = QLabel("Retries:")
+        retry_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        retry_lbl.setToolTip("How many more times an account that didn't open (installer error, network)\n"
+                             "is tried again at the end of the queue. Security checks are never retried.")
+        q_row.addWidget(retry_lbl)
+        self._queue_retry_edit = QLineEdit(str(self._queue_retry_limit()))
+        self._queue_retry_edit.setValidator(QIntValidator(0, 5, self._queue_retry_edit))
+        self._queue_retry_edit.setFixedSize(50, 28)
+        self._queue_retry_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._queue_retry_edit.setToolTip(retry_lbl.toolTip())
+        self._queue_retry_edit.textChanged.connect(
+            lambda text: text.isdigit() and actions.save_ui_setting(self.QUEUE_RETRY_SETTING, int(text))
+        )
+        q_row.addWidget(self._queue_retry_edit)
         q_row.addStretch(1)
         lay.addLayout(q_row)
 
@@ -4655,6 +4676,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "phase_since": time.monotonic(),
             "empty_polls": 0,
             "failed": [],
+            "security": [],
+            "attempts": {},
+            "ever_failed": set(),
+            "cooldown_until": 0.0,
+            "advancing": False,
+            "pause_reason": "",
         }
         print(f"[INFO] Batch queue: {len(usernames)} accounts in {batches} batches of {size}. Starting batch 1.")
         self._ensure_queue_timer()
@@ -4684,13 +4711,19 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         def _worker():
             try:
-                pids = set(actions.presence_mod.get_roblox_processes(max_age=1.0))
-                if pids and manager is not None:
-                    pids -= actions.locked_roblox_pids(manager)  # locked windows stay open
-                count = len(pids)
+                keep = actions.locked_roblox_pids(manager) if manager is not None else set()
+                closed = actions.close_roblox_error_windows(keep)
+                for title in closed:
+                    print(f"[WARNING] Batch queue: closed a Roblox error window ({title}). "
+                          "That account will be retried.")
+                pids = set(actions.presence_mod.get_roblox_processes(max_age=0.0 if closed else 1.0))
+                count = len(pids - keep)  # locked windows stay open
             except Exception:
                 count = -1
-            self._bridge.queue_poll_done.emit(count)
+            try:
+                self._bridge.queue_poll_done.emit(count)
+            except RuntimeError:
+                pass
 
         threading.Thread(target=_worker, daemon=True, name="QueuePoll").start()
 
@@ -4720,6 +4753,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             print(f"[INFO] Batch queue: batch {q['batch']} closed.")
             self._update_queue_status()
         if q["phase"] == "waiting" and count == 0:
+            if now < q.get("cooldown_until", 0.0) and not q["force"]:
+                self._update_queue_status()
+                return
             if not q["remaining"]:
                 self._finish_queue()
             elif not q["paused"] or q["force"]:
@@ -4733,7 +4769,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         batch = q["remaining"][: q["size"]]
         q["remaining"] = q["remaining"][q["size"]:]
         q["batch"] += 1
+        q["batches"] = max(q["batches"], q["batch"] + -(-len(q["remaining"]) // q["size"]))
         q["force"] = False
+        q["advancing"] = False
+        q["pause_reason"] = ""
+        q["cooldown_until"] = 0.0
         q["phase"], q["phase_since"], q["empty_polls"] = "starting", time.monotonic(), 0
         print(f"[INFO] Batch queue: starting batch {q['batch']}/{q['batches']} ({len(batch)} accounts)")
         try:
@@ -4748,14 +4788,15 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             print("[INFO] Batch queue finished: every account has had its turn.")
         self._launch_queue = None
         self._update_queue_status()
-        if q and actions.load_ui_settings().get(QUEUE_SELECT_FAILED_SETTING, False):
-            failed = list(q.get("failed", []))
-            QTimer.singleShot(0, lambda: self._select_failed_queue_accounts(failed))
+        show = getattr(self, "_show_queue_summary", None)
+        if q and callable(show) and actions.load_ui_settings().get(QUEUE_SELECT_FAILED_SETTING, True):
+            QTimer.singleShot(0, lambda: show(q))
 
     def _on_queue_next_clicked(self) -> None:
         q = getattr(self, "_launch_queue", None)
-        if not q:
-            return
+        if not q or q.get("advancing"):
+            return  # one press = one batch
+        q["advancing"] = True
         q["force"] = True
         if q["phase"] != "waiting":
             q["phase"], q["phase_since"] = "waiting", time.monotonic()
@@ -4784,12 +4825,18 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if q:
             waiting = len(q["remaining"])
             left = f"{waiting} account{'s' if waiting != 1 else ''} waiting"
-            if q["phase"] == "starting":
+            if q.get("advancing"):
+                state = f"opening batch {q['batch'] + 1}…"
+            elif q["phase"] == "starting":
                 state = "starting"
             elif q["phase"] == "running":
                 state = "running"
             elif q["paused"]:
-                state = "closed, PAUSED (press Resume)"
+                state = "PAUSED (press Resume)"
+                if q.get("pause_reason"):
+                    state += f" · {q['pause_reason']}"
+            elif q.get("cooldown_until", 0.0) > time.monotonic():
+                state = f"waiting {max(1, int(q['cooldown_until'] - time.monotonic()))}s before the next batch"
             else:
                 state = "closed, opening next…"
             if q["paused"] and q["phase"] != "waiting":
@@ -4802,7 +4849,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             label.setText(text)
             color = "#e0a85c" if q and q["paused"] else (ACCENT_BRIGHT if q else MUTED)
             label.setStyleSheet(f"color: {color}; font-size: 11px;")
-            self._queue_next_btn.setEnabled(bool(q and q["remaining"]))
+            self._queue_next_btn.setEnabled(bool(q and q["remaining"] and not q.get("advancing")))
             self._queue_pause_btn.setEnabled(bool(q))
             self._queue_pause_btn.setText("Resume" if q and q["paused"] else "Pause")
             self._queue_stop_btn.setEnabled(bool(q))
@@ -6073,6 +6120,48 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         _import_btn.clicked.connect(self._on_sett_import_accounts)
         f.addWidget(_import_btn)
+
+        f.addWidget(_sec("AUTO BACKUP"))
+        self._sett_auto_backup_chk = _chk(
+            auto_backup_mod.ENABLED_SETTING, "Back up accounts automatically",
+            "Saves a protected backup when the app starts and after accounts are added or removed\n"
+            f"(at most once an hour). The newest {auto_backup_mod.KEEP} are kept.",
+            default=True,
+        )
+        f.addWidget(self._sett_auto_backup_chk)
+        self._backup_status_lbl = QLabel()
+        self._backup_status_lbl.setWordWrap(True)
+        self._backup_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(self._backup_status_lbl)
+        _backup_row = QHBoxLayout()
+        _backup_row.setSpacing(8)
+        for _label, _slot, _tip in (
+            ("Backup now", self._on_backup_now, "Save a backup right now"),
+            ("Restore from backup", self._on_restore_backup, "Pick a backup by date and restore its accounts"),
+            ("Open backups folder", self._open_backup_folder, "Show the backup files in Explorer"),
+        ):
+            _b = QPushButton(_label)
+            _b.setToolTip(_tip)
+            _b.clicked.connect(_slot)
+            _backup_row.addWidget(_b)
+        _backup_row.addStretch(1)
+        f.addLayout(_backup_row)
+        _backup_row2 = QHBoxLayout()
+        _backup_row2.setSpacing(8)
+        _pw_btn = QPushButton("Backup password…")
+        _pw_btn.setToolTip("Set a password so backups can be restored on another PC")
+        _pw_btn.clicked.connect(self._on_set_backup_password)
+        _backup_row2.addWidget(_pw_btn)
+        _folder_btn = QPushButton("Extra backup folder…")
+        _folder_btn.setToolTip("Also save each backup to a folder like a USB drive, Google Drive or OneDrive")
+        _folder_btn.clicked.connect(self._on_choose_backup_folder)
+        _backup_row2.addWidget(_folder_btn)
+        self._backup_clear_folder_btn = QPushButton("Stop extra copies")
+        self._backup_clear_folder_btn.clicked.connect(self._on_clear_backup_folder)
+        _backup_row2.addWidget(self._backup_clear_folder_btn)
+        _backup_row2.addStretch(1)
+        f.addLayout(_backup_row2)
+        self._refresh_backup_status()
 
         _wipe_btn = QPushButton("Wipe All Data")
         _wipe_btn.setToolTip(
@@ -8078,6 +8167,172 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self, "Encryption Switched",
             f"Encryption method switched to {method_labels[new_method]}.",
         )
+
+    # Auto backup
+    def _accounts_fingerprint(self) -> str:
+        names = sorted(self.manager.accounts.keys())
+        return f"{len(names)}:{hash(tuple(names))}" if names else ""
+
+    def _start_auto_backup(self) -> None:
+        self._backup_fingerprint = ""
+        self._backup_running = False
+        timer = QTimer(self)
+        timer.setInterval(10 * 60 * 1000)
+        timer.timeout.connect(self._auto_backup_tick)
+        timer.start()
+        self._auto_backup_timer = timer
+        if auto_backup_mod.is_enabled():
+            self._run_backup("start")
+
+    def _auto_backup_tick(self) -> None:
+        if not auto_backup_mod.is_enabled():
+            return
+        if auto_backup_mod.backup_due(self._accounts_fingerprint(), getattr(self, "_backup_fingerprint", "")):
+            self._run_backup("accounts changed")
+
+    def _run_backup(self, reason: str, on_done=None) -> None:
+        if getattr(self, "_backup_running", False):
+            return
+        self._backup_running = True
+        fingerprint = self._accounts_fingerprint()
+        manager = self.manager
+
+        def _worker():
+            try:
+                result = auto_backup_mod.make_backup(manager, reason)
+            except Exception as exc:
+                result = OperationResult.failure("BACKUP_FAILED", "Backup Failed", str(exc))
+            self._backup_running = False
+            if result:
+                self._backup_fingerprint = fingerprint
+            elif result.code != "BACKUP_NO_ACCOUNTS":
+                print(f"[WARNING] Accounts backup failed: {result.message}")
+            if on_done is not None:
+                try:
+                    self._bridge.backup_done.emit(result)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True, name="AccountsBackup").start()
+
+    def _on_backup_now(self) -> None:
+        self._run_backup("manual", on_done=True)
+
+    def _on_backup_done(self, result) -> None:
+        if result:
+            _show_info(self, "Backup Accounts", f"{result.message}\n\nSaved in:\n{result.data.get('path', '')}"
+                       + (f"\n\nCopy saved in:\n{result.data['copy']}" if result.data.get("copy") else ""))
+        else:
+            self._show_operation_error(result)
+        self._refresh_backup_status()
+
+    def _open_backup_folder(self) -> None:
+        folder = auto_backup_mod.backup_folder()
+        os.makedirs(folder, exist_ok=True)
+        try:
+            os.startfile(folder)
+        except Exception as exc:
+            _show_error(self, "Backups", f"The folder could not be opened:\n{folder}\n\n{exc}")
+
+    def _refresh_backup_status(self) -> None:
+        label = getattr(self, "_backup_status_lbl", None)
+        if label is None or not isValid(label):
+            return
+        backups = auto_backup_mod.list_backups()
+        portable = auto_backup_mod.has_user_password(self.manager)
+        lines = [
+            ("Backups use your backup password and can be restored on any PC."
+             if portable else
+             "Backups open on this PC only. Set a backup password to restore them on another PC."),
+            (f"Newest: {backups[0]['when']:%Y-%m-%d %H:%M} ({backups[0]['count']} accounts) · {len(backups)} kept"
+             if backups else "No backups yet."),
+        ]
+        extra = str(actions.get_ui_setting(auto_backup_mod.EXTRA_FOLDER_SETTING, "") or "")
+        if extra:
+            lines.append(f"Copies also go to: {extra}")
+        label.setText("\n".join(lines))
+        clear_btn = getattr(self, "_backup_clear_folder_btn", None)
+        if clear_btn is not None and isValid(clear_btn):
+            clear_btn.setVisible(bool(extra))
+
+    def _on_set_backup_password(self) -> None:
+        has_password = auto_backup_mod.has_user_password(self.manager)
+        if has_password:
+            box = QMessageBox(self)
+            box.setWindowTitle("Backup Password")
+            box.setText("A backup password is set. New backups can be restored on any PC with it.")
+            change = box.addButton("Change", QMessageBox.ButtonRole.AcceptRole)
+            remove = box.addButton("Remove", QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() is remove:
+                self.manager.set_secure_setting(auto_backup_mod.PASSWORD_KEY, "")
+                self._refresh_backup_status()
+                return
+            if box.clickedButton() is not change:
+                return
+        password = self._ask_backup_password(confirm=True)
+        if password is None:
+            return
+        if len(password) < account_backup.MIN_PASSWORD_LENGTH:
+            _show_error(self, "Backup Password",
+                        f"Use at least {account_backup.MIN_PASSWORD_LENGTH} characters.")
+            return
+        result = self.manager.set_secure_setting(auto_backup_mod.PASSWORD_KEY, password)
+        if result is not None and not result:
+            self._show_operation_error(result)
+            return
+        _show_info(self, "Backup Password",
+                   "Saved. New backups can be restored on any PC with this password.\n"
+                   "Write it down somewhere safe: without it, those backups can't be opened elsewhere.")
+        self._run_backup("password set")
+        self._refresh_backup_status()
+
+    def _on_choose_backup_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Extra backup folder (USB, Google Drive, OneDrive…)")
+        if not folder:
+            return
+        actions.save_ui_setting(auto_backup_mod.EXTRA_FOLDER_SETTING, folder)
+        self._refresh_backup_status()
+        self._run_backup("extra folder set")
+
+    def _on_clear_backup_folder(self) -> None:
+        actions.save_ui_setting(auto_backup_mod.EXTRA_FOLDER_SETTING, "")
+        self._refresh_backup_status()
+
+    def _on_restore_backup(self) -> None:
+        dialog = _RestoreBackupDialog(self, auto_backup_mod.list_backups())
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.selected_path:
+            return
+        path = dialog.selected_path
+        passwords = auto_backup_mod.candidate_passwords(self.manager)
+        opened_with = None
+        for candidate in passwords:
+            if account_backup.read_backup(path, candidate):
+                opened_with = candidate
+                break
+        if opened_with is None:
+            opened_with = self._ask_backup_password(confirm=False)
+            if opened_with is None:
+                return
+        reply = QMessageBox.question(
+            self, "Restore Backup",
+            "Replace accounts that already exist with the ones from the backup?\n\n"
+            "Yes: replace them · No: keep your current ones and only add missing accounts.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Cancel:
+            return
+        result = account_backup.import_accounts(
+            self.manager, path, opened_with, overwrite=reply == QMessageBox.StandardButton.Yes,
+        )
+        if not result:
+            self._show_operation_error(result)
+            return
+        print(f"[INFO] Restored backup {os.path.basename(path)}: {result.message}")
+        self._refresh_account_list()
+        _show_info(self, "Restore Backup", f"Backup restored. {result.message}")
 
     def _ask_backup_password(self, confirm: bool) -> str | None:
         label = "Backup password:"
@@ -10222,19 +10477,47 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
 
     def _on_account_creator(self):
+        running = getattr(self, "_creator_progress", None)
+        if running is not None and isValid(running) and not running._done:
+            running.show()  # a run is still going: show its window instead of starting another
+            running.raise_()
+            running.activateWindow()
+            return
         dlg = _AccountCreatorDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            stop_event = threading.Event()
+            self._creator_progress = _CreatorProgressDialog(self, dlg.amount, stop_event)
+            self._creator_progress.show()
             account_creator_mod.create_accounts(
                 self.manager,
                 dlg.amount,
                 options=dlg.options,
                 on_done=(
-                    lambda success, message:
-                    self._bridge.account_creator_done.emit(success, message)
+                    lambda success, message, report=None:
+                    self._bridge.account_creator_done.emit(success, message, report)
+                ),
+                stop_event=stop_event,
+                on_progress=(
+                    lambda created, finished, requested:
+                    self._bridge.account_creator_progress.emit(created, finished, requested)
                 ),
             )
 
-    def _on_account_creator_done(self, success: bool, message: str):
+    def _on_account_creator_progress(self, created: int, finished: int, requested: int) -> None:
+        progress = getattr(self, "_creator_progress", None)
+        if progress is not None and isValid(progress):
+            progress.update_progress(created, finished, requested)
+
+    def _on_account_creator_done(self, success: bool, message: str, report=None):
+        progress = getattr(self, "_creator_progress", None)
+        if progress is not None and isValid(progress):
+            progress.finish()
+        self._creator_progress = None
+        if isinstance(report, dict):
+            if report.get("created"):
+                self._refresh_account_list()
+            _CreatorResultsDialog(self, report, message).exec()
+            return
         if success:
             self._refresh_account_list()
             _show_info(self, "Account Creator", message)
@@ -10735,30 +11018,101 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
     # Batch queue: select the accounts that did not open (Settings > Roblox)
 
+    QUEUE_RETRY_SETTING = "queue_retry_count"
+    _QUEUE_COOLDOWN = 30.0
+
+    def _queue_retry_limit(self) -> int:
+        try:
+            return max(0, min(5, int(actions.get_ui_setting(self.QUEUE_RETRY_SETTING, 2))))
+        except (TypeError, ValueError):
+            return 2
+
     def _note_queue_failures(self, result: OperationResult) -> bool:
+        """Sort a batch's failures: retry later, needs a security check, or failed for good.
+
+        While a queue runs, failures are collected (no popup per batch) and
+        summed up when the queue finishes.
+        """
         q = getattr(self, "_launch_queue", None)
-        if not q or not actions.load_ui_settings().get(QUEUE_SELECT_FAILED_SETTING, False):
+        if not q:
             return False
+        for key, default in (("failed", []), ("security", []), ("attempts", {}), ("ever_failed", set())):
+            q.setdefault(key, default)
         data = result.data if isinstance(result.data, dict) else {}
         failed = [name for name in data.get("failed", []) if name]
-        for name in failed:
-            if name not in q["failed"]:
-                q["failed"].append(name)
-        print(f"[WARNING] Batch queue: {len(failed)} account(s) did not open: {', '.join(failed) or 'unknown'}. "
-              "They will be selected when the queue finishes.")
+        codes = data.get("failed_codes") or {}
         batch = data.get("batch") or []
+        limit = self._queue_retry_limit()
+        retry, security, gave_up = [], [], []
+        for name in failed:
+            code = codes.get(name) or result.code or ""
+            q["ever_failed"].add(name)
+            if code == actions.SECURITY_CHECK_CODE:
+                if name not in q["security"]:
+                    q["security"].append(name)
+                security.append(name)
+            elif code in actions.RETRYABLE_LAUNCH_CODES and q["attempts"].get(name, 0) < limit:
+                q["attempts"][name] = q["attempts"].get(name, 0) + 1
+                if name not in q["remaining"]:
+                    q["remaining"].append(name)  # tried again at the end of the queue
+                retry.append(name)
+            else:
+                if name not in q["failed"]:
+                    q["failed"].append(name)
+                gave_up.append(name)
+        if retry:
+            q["batches"] = q["batch"] + -(-len(q["remaining"]) // q["size"])
+            print(f"[WARNING] Batch queue: {len(retry)} account(s) didn't open and will be retried at the end: "
+                  f"{', '.join(retry)}")
+        if security:
+            print(f"[WARNING] Batch queue: {len(security)} account(s) need a Roblox security check (not retried): "
+                  f"{', '.join(security)}")
+        if gave_up:
+            print(f"[WARNING] Batch queue: {len(gave_up)} account(s) failed: {', '.join(gave_up)}")
         if batch and set(batch) <= set(failed) and q["phase"] == "starting":
-            # Nothing from this batch opened, so there is nothing to wait for.
-            q["phase"], q["phase_since"], q["empty_polls"] = "waiting", time.monotonic(), 0
+            now = time.monotonic()
+            q["phase"], q["phase_since"], q["empty_polls"] = "waiting", now, 0
+            if gave_up or security:
+                # Something is wrong that a retry won't fix: stop instead of racing through every batch.
+                q["paused"] = True
+                q["pause_reason"] = f"Batch {q['batch']} failed right away: {result.message or result.code}"
+                print(f"[WARNING] Batch queue paused. {q['pause_reason']} Fix it, then press Resume.")
+            else:
+                # Roblox trouble (installer/update/network): give it a moment, then carry on.
+                q["cooldown_until"] = now + self._QUEUE_COOLDOWN
+                print(f"[INFO] Batch queue: nothing from batch {q['batch']} opened. "
+                      f"Waiting {self._QUEUE_COOLDOWN:.0f}s before the next batch.")
             self._update_queue_status()
-            self._poll_queue()
         return True
 
-    def _select_failed_queue_accounts(self, failed: list[str]) -> None:
+    def _show_queue_summary(self, q: dict) -> None:
+        security = [n for n in q.get("security", []) if n in self.manager.accounts]
+        failed = [n for n in q.get("failed", []) if n in self.manager.accounts and n not in security]
+        leftovers = failed + security
+        ever_failed = set(q.get("ever_failed", set()))
+        retried_ok = len(ever_failed - set(leftovers))
+        opened = max(0, q.get("total", 0) - len(leftovers))
+        parts = [f"{opened} opened"]
+        if retried_ok:
+            parts.append(f"{retried_ok} of them after a retry")
+        if security:
+            parts.append(f"{len(security)} need a security check")
+        if failed:
+            parts.append(f"{len(failed)} failed")
+        summary = " · ".join(parts)
+        print(f"[INFO] Batch queue summary: {summary}")
+        if leftovers:
+            self._select_failed_queue_accounts(leftovers, summary=summary, security=security)
+        else:
+            QMessageBox.information(self, "Queue Finished", f"Batch queue finished.\n\n{summary}")
+
+    def _select_failed_queue_accounts(self, failed: list[str], summary: str = "",
+                                      security: list[str] | None = None) -> None:
         failed = [name for name in failed if name in self.manager.accounts]
         if not failed:
             QMessageBox.information(self, "Queue Finished", "Batch queue finished. Every account opened.")
             return
+        security = list(security or [])
         settings = actions.load_ui_settings()
         if not settings.get("enable_multi_select", False) and len(failed) > 1:
             actions.save_ui_setting("enable_multi_select", True)
@@ -10793,7 +11147,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         box.setWindowTitle("Queue Finished")
         box.setIcon(QMessageBox.Icon.Warning)
         noun = "account" if len(failed) == 1 else "accounts"
-        box.setText(f"Batch queue finished. {len(failed)} {noun} didn't open and {'is' if len(failed) == 1 else 'are'} selected now.")
+        text = f"Batch queue finished. {summary}" if summary else "Batch queue finished."
+        text += f"\n\n{len(failed)} {noun} didn't open and {'is' if len(failed) == 1 else 'are'} selected now."
+        if security:
+            text += ("\nAccounts that need a security check must be verified in Roblox first "
+                     "(log in once and solve it), then join again.")
+        box.setText(text)
         box.setInformativeText(", ".join(failed))
         join_btn = box.addButton("Join now", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Ok)
@@ -11838,6 +12197,192 @@ class _AccountCreatorDialog(QDialog):
         }
         actions.save_ui_setting("creator_suffix_type", self.options["suffix_type"])
         self.accept()
+
+
+class _RestoreBackupDialog(QDialog):
+    """Pick an automatic backup by date, or browse for any .rambak file."""
+
+    def __init__(self, parent, backups: list[dict]):
+        super().__init__(parent)
+        self.selected_path = ""
+        self.setWindowTitle("Restore from Backup")
+        self.setMinimumSize(460, 380)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+        title = QLabel("Choose a backup to restore")
+        title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        lay.addWidget(title)
+        self._list = QListWidget()
+        for backup in backups:
+            item = QListWidgetItem(f"{backup['when']:%Y-%m-%d  %H:%M}    ·    {backup['count']} accounts")
+            item.setData(Qt.ItemDataRole.UserRole, backup["path"])
+            self._list.addItem(item)
+        if not backups:
+            empty = QListWidgetItem("No automatic backups yet. Use Browse to pick a .rambak file.")
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._list.addItem(empty)
+        else:
+            self._list.setCurrentRow(0)
+        self._list.itemDoubleClicked.connect(lambda _item: self._choose())
+        lay.addWidget(self._list, 1)
+        row = QHBoxLayout()
+        browse = QPushButton("Browse…")
+        browse.setAutoDefault(False)
+        browse.clicked.connect(self._browse)
+        row.addWidget(browse)
+        row.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        restore = QPushButton("Restore")
+        restore.setObjectName("primary")
+        restore.setStyleSheet(PRIMARY_BUTTON_QSS)
+        restore.setMinimumWidth(120)
+        restore.clicked.connect(self._choose)
+        row.addWidget(restore)
+        lay.addLayout(row)
+
+    def _choose(self) -> None:
+        item = self._list.currentItem()
+        path = item.data(Qt.ItemDataRole.UserRole) if item is not None else ""
+        if path:
+            self.selected_path = path
+            self.accept()
+
+    def _browse(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Restore from Backup", "",
+                                              "Account backup (*.rambak);;All files (*)")
+        if path:
+            self.selected_path = path
+            self.accept()
+
+
+class _CreatorProgressDialog(QDialog):
+    """Small live window while accounts are being created, with a Stop button."""
+
+    def __init__(self, parent, requested: int, stop_event: threading.Event):
+        super().__init__(parent)
+        self._stop_event = stop_event
+        self._done = False
+        self.setWindowTitle("Account Creator")
+        self.setModal(False)
+        self.setMinimumWidth(380)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(12)
+        title = QLabel("Creating accounts…")
+        title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        lay.addWidget(title)
+        self._status = QLabel(f"0 of {requested} created")
+        self._status.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+        lay.addWidget(self._status)
+        hint = QLabel("Complete any CAPTCHA in the browser windows. Press Stop to start no new accounts.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        lay.addWidget(hint)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._stop_btn = QPushButton("Stop")
+        self._stop_btn.setObjectName("primary")
+        self._stop_btn.setStyleSheet(PRIMARY_BUTTON_QSS)
+        self._stop_btn.setAutoDefault(False)
+        self._stop_btn.setMinimumWidth(120)
+        self._stop_btn.clicked.connect(self._stop)
+        row.addWidget(self._stop_btn)
+        lay.addLayout(row)
+
+    def _stop(self) -> None:
+        self._stop_event.set()
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.setText("Stopping…")
+        self._status.setText(self._status.text() + " · stopping: no new accounts will start. "
+                             "Close any signup browser that is still open to end it now.")
+        self._status.setWordWrap(True)
+        print("[Account Creator] Stop pressed: no new accounts will be started.")
+
+    def update_progress(self, created: int, finished: int, requested: int) -> None:
+        if not self._stop_event.is_set():
+            self._status.setText(f"{created} of {requested} created · {finished} attempted")
+
+    def finish(self) -> None:
+        self._done = True
+        self.close()
+
+    def closeEvent(self, event):
+        if not self._done and not self._stop_event.is_set():
+            # Closing the window keeps the run going; only Stop ends it.
+            self.hide()
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
+class _CreatorResultsDialog(QDialog):
+    """Clear summary of an Account Creator run: counts, every created account, every failure."""
+
+    def __init__(self, parent, report: dict, message: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Account Creator — Results")
+        self.setMinimumSize(520, 460)
+        created = list(report.get("created") or [])
+        failures = list(report.get("failures") or [])
+        requested = int(report.get("requested") or 0)
+        stopped = bool(report.get("stopped"))
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+        head = QLabel(("Stopped. " if stopped else "Done. ")
+                      + f"{len(created)} created" + (f" · {len(failures)} failed" if failures else "")
+                      + (f" · {requested - len(created) - len(failures)} not started" if stopped else ""))
+        head.setStyleSheet("font-size: 16px; font-weight: 700;")
+        lay.addWidget(head)
+        sub = QLabel(f"{len(created)} of {requested} requested accounts were added to your Account List.")
+        sub.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+        lay.addWidget(sub)
+
+        created_lbl = QLabel(f"Created accounts ({len(created)})")
+        created_lbl.setStyleSheet("font-size: 13px; font-weight: 700;")
+        lay.addWidget(created_lbl)
+        self._created = QTextEdit()
+        self._created.setReadOnly(True)
+        self._created.setPlainText("\n".join(created) if created else "None")
+        lay.addWidget(self._created, 2)
+
+        if failures:
+            failed_lbl = QLabel(f"Failed ({len(failures)})")
+            failed_lbl.setStyleSheet("font-size: 13px; font-weight: 700;")
+            lay.addWidget(failed_lbl)
+            grouped: dict[str, int] = {}
+            for failure in failures:
+                reason = failure.get("message") or failure.get("code") or "Unknown error"
+                grouped[reason] = grouped.get(reason, 0) + 1
+            failed_box = QTextEdit()
+            failed_box.setReadOnly(True)
+            failed_box.setPlainText("\n".join(f"{count}× {reason}" for reason, count in grouped.items()))
+            lay.addWidget(failed_box, 1)
+        elif not created and message:
+            note = QLabel(message)
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+            lay.addWidget(note)
+
+        row = QHBoxLayout()
+        copy_btn = QPushButton("Copy all usernames")
+        copy_btn.setEnabled(bool(created))
+        copy_btn.setAutoDefault(False)
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(created)))
+        row.addWidget(copy_btn)
+        row.addStretch(1)
+        ok_btn = QPushButton("OK")
+        ok_btn.setObjectName("primary")
+        ok_btn.setStyleSheet(PRIMARY_BUTTON_QSS)
+        ok_btn.setMinimumWidth(120)
+        ok_btn.clicked.connect(self.accept)
+        row.addWidget(ok_btn)
+        lay.addLayout(row)
 
 
 class _ImportUserPassDialog(QDialog):
