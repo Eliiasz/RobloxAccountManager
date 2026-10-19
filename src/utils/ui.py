@@ -17,6 +17,7 @@ import time
 import webbrowser
 import weakref
 import uuid
+from dataclasses import replace
 
 from utils import motion, icons, splash
 from utils.app_paths import get_app_dir, get_data_dir, get_resource_path
@@ -29,7 +30,7 @@ if _ROOT_DIR not in sys.path:
 import psutil
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, QUrl, Signal,
+    QEasingCurve, QEvent, QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction, QColor, QCursor, QFont, QIcon, QPainter, QPainterPath, QPen,
@@ -4626,6 +4627,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "phase": "starting",
             "phase_since": time.monotonic(),
             "empty_polls": 0,
+            "failed": [],
         }
         print(f"[INFO] Batch queue: {len(usernames)} accounts in {batches} batches of {size}. Starting batch 1.")
         self._ensure_queue_timer()
@@ -4709,10 +4711,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._update_queue_status()
 
     def _finish_queue(self) -> None:
-        if getattr(self, "_launch_queue", None):
+        q = getattr(self, "_launch_queue", None)
+        if q:
             print("[INFO] Batch queue finished: every account has had its turn.")
         self._launch_queue = None
         self._update_queue_status()
+        if q and actions.load_ui_settings().get(self.QUEUE_SELECT_FAILED_SETTING, False):
+            failed = list(q.get("failed", []))
+            QTimer.singleShot(0, lambda: self._select_failed_queue_accounts(failed))
 
     def _on_queue_next_clicked(self) -> None:
         q = getattr(self, "_launch_queue", None)
@@ -5384,6 +5390,26 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         sa.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content_stack.addWidget(sa)
+
+        f.addWidget(_sec("LAUNCH PROBLEMS"))
+        _lp_lbl = QLabel("Only needed if some accounts often fail to open (for example Roblox's "
+                         "\"Installer encountered a critical error\").")
+        _lp_lbl.setWordWrap(True)
+        _lp_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(_lp_lbl)
+        self._sett_queue_failed_chk = _chk(
+            self.QUEUE_SELECT_FAILED_SETTING, "Select failed accounts when the queue finishes",
+            "During a Batch Queue, remember every account that didn't open.\n"
+            "When the queue is done they are selected in the Account List, ready for Join.\n"
+            "The error popup is not shown after each batch while the queue runs.",
+        )
+        f.addWidget(self._sett_queue_failed_chk)
+        self._sett_first_alone_chk = _chk(
+            actions.FIRST_ALONE_SETTING, "Start one account first when launching all at once",
+            "With Launch Delay 0, the first account opens alone and the rest start once it is ready.\n"
+            "This lets a Roblox update finish first, so several installers don't crash each other.",
+        )
+        f.addWidget(self._sett_first_alone_chk)
 
         f.addWidget(_sec("PERFORMANCE"))
         _moved_lbl = QLabel("FPS cap and graphics quality now have their own window: the Performance button on the Accounts page, under Recent games.")
@@ -6692,6 +6718,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     _WINDOW_KEY_SPECS = (
         ("minimize_all_hotkey", "MINIMIZE_ALL_HOTKEY_ID", "DEFAULT_MINIMIZE_HOTKEY"),
         ("restore_all_hotkey", "RESTORE_ALL_HOTKEY_ID", "DEFAULT_RESTORE_HOTKEY"),
+        ("minimize_one_hotkey", "MINIMIZE_ONE_HOTKEY_ID", "DEFAULT_MINIMIZE_ONE_HOTKEY"),
     )
 
     def _unregister_window_keys(self) -> None:
@@ -8447,6 +8474,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if window_grid_mod.is_hotkey_message(message, window_grid_mod.RESTORE_ALL_HOTKEY_ID):
             print(f"[INFO] Restored {window_grid_mod.restore_roblox_windows()} Roblox window(s)")
             return True, 0
+        if window_grid_mod.is_hotkey_message(message, window_grid_mod.MINIMIZE_ONE_HOTKEY_ID):
+            if not window_grid_mod.minimize_one_roblox_window():
+                print("[INFO] No open Roblox window left to minimize")
+            return True, 0
         if window_grid_mod.is_hotkey_message(message):
             result = window_grid_mod.tile_roblox_windows()
             if not result:
@@ -9167,7 +9198,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         f = self._sheet_group(
             body, "Window shortcuts", "windows",
-            "Minimize or bring back every Roblox window at once.",
+            "Minimize or bring back every Roblox window at once, or minimize them one at a time.",
         )
         self._sett_winkeys_chk = self._settings_checkbox(
             "window_keys_enabled", "Enable Minimize / Restore shortcuts",
@@ -9180,6 +9211,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         for setting_key, label, default in (
             ("minimize_all_hotkey", "Minimize all Roblox", window_grid_mod.DEFAULT_MINIMIZE_HOTKEY),
             ("restore_all_hotkey", "Restore all Roblox", window_grid_mod.DEFAULT_RESTORE_HOTKEY),
+            ("minimize_one_hotkey", "Minimize one Roblox", window_grid_mod.DEFAULT_MINIMIZE_ONE_HOTKEY),
         ):
             row = QHBoxLayout()
             lbl = QLabel(label)
@@ -10300,13 +10332,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             print(f"[INFO] Joining place {effective_place_id} for {usernames[0]}")
             actions.join_place(
                 self.manager, usernames[0], place_id, private,
-                on_done=self._emit_launch_done,
+                on_done=self._launch_callback(usernames),
             )
         else:
             print(f"[INFO] Joining place {effective_place_id} for {len(usernames)} accounts")
             actions.join_place_all(
                 self.manager, usernames, place_id, private,
-                on_done=self._emit_launch_done,
+                on_done=self._launch_callback(usernames),
             )
 
     def _on_join_user(self):
@@ -10413,7 +10445,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
         usernames = self._queue_or_all(
             usernames,
-            lambda batch: actions.launch_home(self.manager, batch, on_done=self._emit_launch_done),
+            lambda batch: actions.launch_home(self.manager, batch, on_done=self._launch_callback(batch)),
         )
         if len(usernames) == 1:
             print(f"[INFO] Launching Roblox Home for {usernames[0]}")
@@ -10425,7 +10457,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             launch_accounts = usernames
         actions.launch_home(
             self.manager, launch_accounts,
-            on_done=self._emit_launch_done,
+            on_done=self._launch_callback(usernames),
         )
 
     def _on_kill_all_roblox(self):
@@ -10459,7 +10491,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if getattr(self, "_launch_queue", None):
             self._poll_queue()  # the queue sees the closed clients and moves on
 
-    def _emit_launch_done(self, success: bool, result):
+    def _launch_callback(self, usernames: list[str]):
+        batch = list(usernames)
+        return lambda success, result: self._emit_launch_done(success, result, batch)
+
+    def _emit_launch_done(self, success: bool, result, usernames: list[str] | None = None):
         if isinstance(result, OperationResult):
             operation_result = result
         elif success:
@@ -10468,8 +10504,15 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             operation_result = OperationResult.failure(
                 "ROBLOX_LAUNCH_FAILED",
                 "Roblox Could Not Start",
-                str(result or "Roblox could not be launched."),
+                str(result or actions.LAUNCH_NOT_OPEN_MESSAGE),
             )
+        if not operation_result and usernames:
+            # Remember exactly which accounts did not open, for the queue.
+            data = dict(operation_result.data) if isinstance(operation_result.data, dict) else {}
+            if "failed" not in data:
+                data["failed"] = list(usernames) if len(usernames) == 1 else []
+            data["batch"] = list(usernames)
+            operation_result = replace(operation_result, data=data)
         self._bridge.launch_done.emit(operation_result)
 
     def _on_launch_and_refresh(self, result):
@@ -10478,10 +10521,81 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             result,
             failure_code="ROBLOX_LAUNCH_FAILED",
             failure_title="Roblox Could Not Start",
-            failure_message="Roblox could not be launched.",
+            failure_message=actions.LAUNCH_NOT_OPEN_MESSAGE,
         )
         if not operation_result:
+            if self._note_queue_failures(operation_result):
+                return  # collected for the end of the queue; no popup per batch
             self._show_operation_error(operation_result)
+
+    # Batch queue: select the accounts that did not open (Settings > Roblox)
+    QUEUE_SELECT_FAILED_SETTING = "queue_select_failed"
+
+    def _note_queue_failures(self, result: OperationResult) -> bool:
+        q = getattr(self, "_launch_queue", None)
+        if not q or not actions.load_ui_settings().get(self.QUEUE_SELECT_FAILED_SETTING, False):
+            return False
+        data = result.data if isinstance(result.data, dict) else {}
+        failed = [name for name in data.get("failed", []) if name]
+        for name in failed:
+            if name not in q["failed"]:
+                q["failed"].append(name)
+        print(f"[WARNING] Batch queue: {len(failed)} account(s) did not open: {', '.join(failed) or 'unknown'}. "
+              "They will be selected when the queue finishes.")
+        batch = data.get("batch") or []
+        if batch and set(batch) <= set(failed) and q["phase"] == "starting":
+            # Nothing from this batch opened, so there is nothing to wait for.
+            q["phase"], q["phase_since"], q["empty_polls"] = "waiting", time.monotonic(), 0
+            self._update_queue_status()
+            self._poll_queue()
+        return True
+
+    def _select_failed_queue_accounts(self, failed: list[str]) -> None:
+        failed = [name for name in failed if name in self.manager.accounts]
+        if not failed:
+            QMessageBox.information(self, "Queue Finished", "Batch queue finished. Every account opened.")
+            return
+        settings = actions.load_ui_settings()
+        if not settings.get("enable_multi_select", False) and len(failed) > 1:
+            actions.save_ui_setting("enable_multi_select", True)
+            check = getattr(self, "_sett_multisel_chk", None)
+            if check is not None and isValid(check):
+                check.blockSignals(True)
+                check.setChecked(True)
+                check.blockSignals(False)
+            self._on_sett_multi_select(True)
+        # Make sure every failed account is visible before selecting it.
+        if self._current_group is not None:
+            self._current_group = None
+        if self._account_search.text():
+            self._account_search.blockSignals(True)
+            self._account_search.clear()
+            self._account_search.blockSignals(False)
+        self._account_query = ""
+        self._refresh_account_list()
+        self._show_page(0)
+        self._account_list.clearSelection()
+        first = None
+        for row in range(self._account_list.count()):
+            item = self._account_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) in failed:
+                item.setSelected(True)
+                first = first or item
+        if first is not None:
+            self._account_list.setCurrentItem(first, QItemSelectionModel.SelectionFlag.NoUpdate)
+            self._account_list.scrollToItem(first)
+        print(f"[INFO] Batch queue: selected {len(failed)} account(s) that did not open: {', '.join(failed)}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Queue Finished")
+        box.setIcon(QMessageBox.Icon.Warning)
+        noun = "account" if len(failed) == 1 else "accounts"
+        box.setText(f"Batch queue finished. {len(failed)} {noun} didn't open and {'is' if len(failed) == 1 else 'are'} selected now.")
+        box.setInformativeText(", ".join(failed))
+        join_btn = box.addButton("Join now", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is join_btn:
+            self._on_join_place()
 
     def _operation_error_message_text(self, result: OperationResult) -> str:
         lines = [

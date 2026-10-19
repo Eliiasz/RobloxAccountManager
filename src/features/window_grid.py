@@ -21,8 +21,10 @@ HOTKEY_ID = 0x52414D47
 KILL_ALL_HOTKEY_ID = 0x52414D4B  # "RAMK": Kill All Roblox shortcut
 MINIMIZE_ALL_HOTKEY_ID = 0x52414D4D  # "RAMM": minimize every Roblox window
 RESTORE_ALL_HOTKEY_ID = 0x52414D52   # "RAMR": restore every Roblox window
+MINIMIZE_ONE_HOTKEY_ID = 0x52414D31  # "RAM1": minimize one Roblox window per press
 DEFAULT_MINIMIZE_HOTKEY = "F11"
 DEFAULT_RESTORE_HOTKEY = "F10"
+DEFAULT_MINIMIZE_ONE_HOTKEY = "F9"
 
 _SW_MINIMIZE = 6
 _SW_RESTORE = 9
@@ -220,6 +222,48 @@ def minimize_roblox_windows() -> int:
 
 def restore_roblox_windows() -> int:
     return _show_all_roblox_windows(_SW_RESTORE)
+
+
+def _pick_window_to_minimize(candidates: list[int], foreground: int, z_order: list[int]) -> int:
+    """The focused Roblox window, otherwise the Roblox window on top of the others."""
+    if not candidates:
+        return 0
+    wanted = set(candidates)
+    if foreground in wanted:
+        return foreground
+    for hwnd in z_order:
+        if hwnd in wanted:
+            return hwnd
+    return candidates[0]
+
+
+def _windows_in_z_order() -> list[int]:
+    get_top, get_next = _user32.GetTopWindow, _user32.GetWindow
+    get_top.argtypes, get_top.restype = [wintypes.HWND], wintypes.HWND
+    get_next.argtypes, get_next.restype = [wintypes.HWND, wintypes.UINT], wintypes.HWND
+    order = []
+    hwnd = get_top(None)
+    while hwnd and len(order) < 10000:
+        order.append(int(hwnd))
+        hwnd = get_next(hwnd, 2)  # GW_HWNDNEXT: the window below it
+    return order
+
+
+def minimize_one_roblox_window() -> int:
+    """Minimize a single Roblox window: the one in use, or else the top one.
+
+    Returns 1 when a window was minimized, 0 when none is left open.
+    """
+    try:
+        candidates = [hwnd for hwnd in _get_roblox_windows() if not win32gui.IsIconic(hwnd)]
+        target = _pick_window_to_minimize(candidates, int(win32gui.GetForegroundWindow() or 0),
+                                          _windows_in_z_order() if candidates else [])
+        if not target:
+            return 0
+        _user32.ShowWindowAsync(wintypes.HWND(target), _SW_MINIMIZE)
+        return 1
+    except Exception:
+        return 0
 
 
 def _get_cursor_monitor_work_area() -> tuple[int, int, int, int]:

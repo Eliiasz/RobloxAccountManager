@@ -26,6 +26,7 @@ import requests
 from ctypes import wintypes
 
 
+from dataclasses import replace as _replace_result
 from typing import Callable
 from classes.operation_result import OperationResult, ensure_result, unexpected_result
 from classes.roblox_api import RobloxAPI
@@ -136,6 +137,22 @@ def fetch_game_name(place_id: str) -> str:
 
 
 # Launch / join
+LAUNCH_NOT_OPEN_MESSAGE = (
+    "Roblox didn't open. It may have been updating or its installer failed. Try again in a minute."
+)
+# Codes that mean the Roblox window never appeared (installer crash, update, closed at once).
+_NOT_OPEN_CODES = frozenset({"ROBLOX_LAUNCH_FAILED", "ROBLOX_CLIENT_EXITED", "ROBLOX_LAUNCH_UNCONFIRMED"})
+FIRST_ALONE_SETTING = "launch_first_alone"
+_FIRST_ALONE_TIMEOUT = 120.0
+_INSTALLER_NAMES = frozenset({"robloxplayerinstaller.exe", "robloxplayerlauncher.exe"})
+
+
+def _with_failed_accounts(result: OperationResult, failures) -> OperationResult:
+    data = dict(result.data) if isinstance(result.data, dict) else {}
+    data["failed"] = [username for username, _ in failures]
+    return _replace_result(result, data=data)
+
+
 def _batch_launch_result(
     action: str,
     total: int,
@@ -157,22 +174,27 @@ def _batch_launch_result(
         f"{username}: {result.code} - {result.message}"
         for username, result in failures
     )
+    if any(result.code in _NOT_OPEN_CODES for _, result in failures):
+        detail += "\n\n" + LAUNCH_NOT_OPEN_MESSAGE
     if success_count:
-        return OperationResult.failure(
+        return _with_failed_accounts(OperationResult.failure(
             "PARTIAL_LAUNCH_FAILURE",
             "Some Accounts Failed to Launch",
             summary,
             detail=detail,
-        )
+        ), failures)
 
     first_result = failures[0][1]
-    return OperationResult.failure(
+    message = first_result.message or LAUNCH_NOT_OPEN_MESSAGE
+    if first_result.code in _NOT_OPEN_CODES and len(failures) > 1:
+        message = LAUNCH_NOT_OPEN_MESSAGE
+    return _with_failed_accounts(OperationResult.failure(
         first_result.code or "ROBLOX_LAUNCH_FAILED",
         first_result.title or "Roblox Could Not Start",
-        first_result.message or "Roblox could not be launched.",
+        message,
         detail=detail,
         retryable=first_result.retryable,
-    )
+    ), failures)
 
 
 def get_launch_delay_seconds(settings: dict | None = None) -> float:
@@ -201,11 +223,37 @@ def _wait_between_launches(
     time.sleep(delay)
 
 
+def _roblox_installer_running() -> bool:
+    for process in psutil.process_iter(["name"]):
+        try:
+            if (process.info.get("name") or "").lower() in _INSTALLER_NAMES:
+                return True
+        except (psutil.Error, AttributeError):
+            continue
+    return False
+
+
+def _wait_for_first_client(before: int, timeout: float = _FIRST_ALONE_TIMEOUT) -> bool:
+    """Wait until a new Roblox client runs and no Roblox installer/updater is busy."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            running = len(presence_mod.get_roblox_processes(force=True))
+        except Exception:
+            running = before
+        if running > before and not _roblox_installer_running():
+            time.sleep(2.0)  # let the client finish loading its files
+            return True
+        time.sleep(1.0)
+    return False
+
+
 def _run_launch_batch(
     usernames: list[str],
     launch_one: Callable[[str, bool], OperationResult],
     launch_delay: float,
     label: str,
+    first_alone: bool | None = None,
 ) -> tuple[int, list[tuple[str, OperationResult]], list[tuple[str, OperationResult]]]:
     """Launch every account and collect results in list order.
 
@@ -225,10 +273,26 @@ def _run_launch_batch(
         print(f"[{'SUCCESS' if result else 'ERROR'}] {label} {u}: {'OK' if result else 'FAIL'}")
 
     if launch_delay <= 0 and len(usernames) > 1:
-        print(f"[INFO] {label}: launching {len(usernames)} accounts at the same time")
+        if first_alone is None:
+            first_alone = bool(load_ui_settings().get(FIRST_ALONE_SETTING, False))
+        together = list(usernames)
+        if first_alone:
+            # Opt-in (Settings > Roblox): one client first, so a Roblox update
+            # finishes before several installers can trip over each other.
+            first = together.pop(0)
+            try:
+                before = len(presence_mod.get_roblox_processes(force=True))
+            except Exception:
+                before = 0
+            print(f"[INFO] {label}: starting {first} first, the rest follow once it is ready")
+            _one(first, False)
+            if results.get(first):
+                if not _wait_for_first_client(before):
+                    print(f"[WARNING] {label}: {first} was not ready in time, starting the rest anyway")
+        print(f"[INFO] {label}: launching {len(together)} accounts at the same time")
         threads = [
             threading.Thread(target=_one, args=(u, True), daemon=True, name=f"launch-{u}")
-            for u in usernames
+            for u in together
         ]
         for thread in threads:
             thread.start()
@@ -245,7 +309,7 @@ def _run_launch_batch(
     successful_launches: list[tuple[str, OperationResult]] = []
     for u in usernames:
         result = results.get(u) or OperationResult.failure(
-            "ROBLOX_LAUNCH_FAILED", "Roblox Could Not Start", "Roblox could not be launched.")
+            "ROBLOX_LAUNCH_FAILED", "Roblox Could Not Start", LAUNCH_NOT_OPEN_MESSAGE)
         if result:
             success += 1
             successful_launches.append((u, result))
@@ -438,7 +502,7 @@ def launch_home(manager, username: str | list[str], on_done: Callable[[bool, str
                     ),
                     failure_code="ROBLOX_LAUNCH_FAILED",
                     failure_title="Roblox Could Not Start",
-                    failure_message="Roblox could not be launched.",
+                    failure_message=LAUNCH_NOT_OPEN_MESSAGE,
                 )
                 on_done(bool(result), result)
             except Exception as exc:
