@@ -2,4 +2,4 @@
 Application version information.
 """
 
-APP_VERSION = "2.9.7"
+APP_VERSION = "2.9.8"

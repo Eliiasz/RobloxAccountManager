@@ -5184,7 +5184,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             w.setStyleSheet("background: transparent;")
             # A fixed-width column keeps each value box next to its label
             # instead of at the far edge of a wide window.
-            w.setMaximumWidth(680)
+            w.setMaximumWidth(560)
             lay = QVBoxLayout(w)
             lay.setContentsMargins(16, 14, 16, 14)
             lay.setSpacing(6)
