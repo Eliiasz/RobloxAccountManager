@@ -71,6 +71,13 @@ def main(out_dir: str) -> int:
         window._show_page(4)
         wait(app, 600)
         window.grab().save(str(out / "settings.png"))
+        from PySide6.QtWidgets import QPushButton
+        for button in window.findChildren(QPushButton):
+            if button.objectName() == "navTab" and button.text() == "Roblox":
+                button.click()
+                wait(app, 500)
+                window.grab().save(str(out / "settings_roblox.png"))
+                break
         for index, name in ((1, "auto_rejoin"), (2, "anti_afk"), (3, "multi_roblox"), (8, "ban_check"),
                             (5, "console"), (6, "contact")):
             window._show_page(index)

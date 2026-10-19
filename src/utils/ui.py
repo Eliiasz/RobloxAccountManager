@@ -442,6 +442,7 @@ PRIMARY_BUTTON_QSS = (
     f"QPushButton:disabled {{ background: {RAISED}; color: {MUTED}; }}"
 )
 
+QUEUE_SELECT_FAILED_SETTING = "queue_select_failed"
 TITLE_BAR_HEIGHT = 66
 ROW_AVATAR_SIZE = 36
 MIN_WINDOW_SIZE = QSize(1080, 720)
@@ -4716,7 +4717,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             print("[INFO] Batch queue finished: every account has had its turn.")
         self._launch_queue = None
         self._update_queue_status()
-        if q and actions.load_ui_settings().get(self.QUEUE_SELECT_FAILED_SETTING, False):
+        if q and actions.load_ui_settings().get(QUEUE_SELECT_FAILED_SETTING, False):
             failed = list(q.get("failed", []))
             QTimer.singleShot(0, lambda: self._select_failed_queue_accounts(failed))
 
@@ -5398,7 +5399,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         _lp_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
         f.addWidget(_lp_lbl)
         self._sett_queue_failed_chk = _chk(
-            self.QUEUE_SELECT_FAILED_SETTING, "Select failed accounts when the queue finishes",
+            QUEUE_SELECT_FAILED_SETTING, "Select failed accounts when the queue finishes",
             "During a Batch Queue, remember every account that didn't open.\n"
             "When the queue is done they are selected in the Account List, ready for Join.\n"
             "The error popup is not shown after each batch while the queue runs.",
@@ -10529,11 +10530,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._show_operation_error(operation_result)
 
     # Batch queue: select the accounts that did not open (Settings > Roblox)
-    QUEUE_SELECT_FAILED_SETTING = "queue_select_failed"
 
     def _note_queue_failures(self, result: OperationResult) -> bool:
         q = getattr(self, "_launch_queue", None)
-        if not q or not actions.load_ui_settings().get(self.QUEUE_SELECT_FAILED_SETTING, False):
+        if not q or not actions.load_ui_settings().get(QUEUE_SELECT_FAILED_SETTING, False):
             return False
         data = result.data if isinstance(result.data, dict) else {}
         failed = [name for name in data.get("failed", []) if name]

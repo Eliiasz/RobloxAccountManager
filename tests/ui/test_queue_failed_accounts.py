@@ -13,7 +13,6 @@ def _window(queue):
         _launch_queue=queue,
         _update_queue_status=Mock(),
         _poll_queue=Mock(),
-        QUEUE_SELECT_FAILED_SETTING=ui.AccountManagerUIQt.QUEUE_SELECT_FAILED_SETTING,
     )
     window._note_queue_failures = ui.AccountManagerUIQt._note_queue_failures.__get__(window)
     return window
