@@ -1630,6 +1630,29 @@ class _GameNameLabel(QLabel):
             self.on_change(text)
 
 
+def _app_icon(icon_path: str | None = None) -> QIcon:
+    """The ANAne logo as a window/taskbar icon.
+
+    Built from logo.png at every common size so Windows always has a size it
+    can show, with the .ico file as a fallback.
+    """
+    icon = QIcon()
+    logo = QPixmap(get_resource_path("assets", "logo.png"))
+    if not logo.isNull():
+        side = max(logo.width(), logo.height())
+        square = QPixmap(side, side)
+        square.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(square)
+        painter.drawPixmap((side - logo.width()) // 2, (side - logo.height()) // 2, logo)
+        painter.end()
+        for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+            icon.addPixmap(square.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation))
+    if icon.isNull() and icon_path and os.path.exists(icon_path):
+        icon = QIcon(icon_path)
+    return icon
+
+
 class _NavPanel(QFrame):
     """Sidebar frame that keeps its sliding highlight aligned when it resizes."""
 
@@ -1808,11 +1831,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setWindowTitle("ANAne's Roblox Account Manager")
         self._init_window_size()
-        if self._icon_path:
-            try:
-                self.setWindowIcon(QIcon(self._icon_path))
-            except Exception:
-                pass
+        try:
+            app_icon = _app_icon(self._icon_path)
+            if not app_icon.isNull():
+                self.setWindowIcon(app_icon)
+        except Exception:
+            pass
 
         self._apply_stylesheet()
         self._build_ui()
@@ -8525,7 +8549,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
 
         try:
-            icon = QIcon(self._icon_path) if self._icon_path else QApplication.windowIcon()
+            icon = _app_icon(self._icon_path)
+            if icon.isNull():
+                icon = QApplication.windowIcon()
             if icon.isNull():
                 return OperationResult.failure(
                     "SYSTEM_TRAY_SETUP_FAILED",
@@ -12682,12 +12708,14 @@ def main(icon_path: str | None = None, *, smoke_test: bool = False) -> int:
             _alt = get_resource_path("assets", "icon.ico")
             icon_path = _alt if os.path.exists(_alt) else None
 
-    if icon_path and os.path.exists(icon_path):
-        try:
-            app.setApplicationIcon(QIcon(icon_path))
-            app.setWindowIcon(QIcon(icon_path))
-        except Exception:
-            pass
+    try:
+        app_icon = _app_icon(icon_path)
+        if not app_icon.isNull():
+            app.setWindowIcon(app_icon)
+            if hasattr(app, "setApplicationIcon"):
+                app.setApplicationIcon(app_icon)
+    except Exception:
+        pass
 
     try:
         diagnostics.set_startup_stage("creating main window")
