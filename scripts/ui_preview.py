@@ -25,7 +25,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from features import settings_store  # noqa: E402
 
 SAMPLE_ACCOUNTS = {
-    "P4kz002": {}, "P4kz003": {}, "P4kz004": {}, "P4kz005": {}, "P4kz006": {},
+    "P4kz002": {}, "P4kz003": {"locked": True}, "P4kz004": {}, "P4kz005": {}, "P4kz006": {},
     "CBT0777": {}, "markydancel2006": {"note": "GRADE MAKER"}, "ejcristobal25": {},
     "Johnfreecss_28": {"note": "TRAIT MAKER"}, "P4kz0010": {},
 }
