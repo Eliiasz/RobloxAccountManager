@@ -47,6 +47,7 @@ def main(out_dir: str) -> int:
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     from utils import ui
+    ui.actions.save_recent_game("113290951185459", "Anime Dice")
 
     manager = MagicMock()
     manager.accounts = {name: dict(data) for name, data in SAMPLE_ACCOUNTS.items()}

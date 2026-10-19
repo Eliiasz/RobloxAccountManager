@@ -431,10 +431,19 @@ PRIMARY_TEXT = "#FFFFFF" if color_themes.contrast_ratio("#FFFFFF", PRIMARY_BOTTO
 SCROLL_HANDLE = color_themes.mix(PANEL, TEXT, 0.16)
 SCROLL_HANDLE_HOVER = color_themes.mix(PANEL, TEXT, 0.28)
 ONLINE_GREEN = "#2ECC71"
+PRIMARY_BUTTON_QSS = (
+    f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {PRIMARY_TOP}, stop:1 {PRIMARY_BOTTOM});"
+    f" border: 0; border-radius: 10px; min-height: 42px; padding: 0 14px; text-align: center;"
+    f" color: {PRIMARY_TEXT}; font-size: 14px; font-weight: 700; }}"
+    f"QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+    f" stop:0 {PRIMARY_HOVER_TOP}, stop:1 {PRIMARY_HOVER_BOTTOM}); }}"
+    f"QPushButton:pressed {{ background: {PRIMARY_PRESSED}; }}"
+    f"QPushButton:disabled {{ background: {RAISED}; color: {MUTED}; }}"
+)
 
 TITLE_BAR_HEIGHT = 66
 ROW_AVATAR_SIZE = 36
-MIN_WINDOW_SIZE = QSize(980, 660)
+MIN_WINDOW_SIZE = QSize(1080, 720)
 DEFAULT_WINDOW_SIZE = QSize(1240, 820)
 
 _dropdown_arrow_cache: dict[str, str] = {}
@@ -1506,6 +1515,8 @@ class _SettingsSheet(QDialog):
         body.setSpacing(12)
         build(body)
         body.addStretch(1)
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
         scroll.setWidget(content)
         lay.addWidget(scroll, 1)
 
@@ -2037,8 +2048,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             }}
             QPushButton#sideNav {{
                 background: transparent; border: 0; border-radius: 12px;
-                text-align: left; min-height: 46px; max-height: 46px;
-                padding: 0 14px; color: {MUTED}; font-size: 14px;
+                text-align: left; min-height: 48px; max-height: 48px;
+                padding: 0 14px; color: {MUTED}; font-size: 15px;
             }}
             QPushButton#sideNav:hover {{ color: {TEXT}; }}
             QPushButton#sideNav:checked {{ color: {ACCENT_TEXT}; font-weight: 700; }}
@@ -2122,11 +2133,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 padding: 4px;
             }}
             QComboBox#bigField {{ min-height: 30px; font-size: 13px; }}
-
-            QSpinBox, QDoubleSpinBox {{
-                background: {INPUT}; border: 1px solid {LINE}; border-radius: 8px;
-                padding: 4px 8px; min-height: 22px; color: {TEXT};
-            }}
 
             QPushButton {{
                 background: {INPUT}; border: 1px solid {LINE}; border-radius: 10px;
@@ -2506,7 +2512,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         text_col.addWidget(title)
 
         crumbs = [("Manage", 0), ("Auto-Rejoin", 1), ("Anti AFK", 2), ("Multi Roblox", 3)]
-        dot = f'<span style="color:{HOVER};">&nbsp;&nbsp;&bull;&nbsp;&nbsp;</span>'
+        dot = f'<span style="color:{color_themes.mix(MUTED, BG, 0.45)};">&nbsp;&nbsp;&bull;&nbsp;&nbsp;</span>'
         links = dot.join(
             f'<a href="{index}" style="color:{MUTED}; text-decoration:none;">{label}</a>'
             for label, index in crumbs
@@ -2659,11 +2665,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _build_nav_panel(self) -> QFrame:
         panel = _NavPanel()
         panel.setObjectName("navPanel")
-        panel.setFixedWidth(212)
+        panel.setFixedWidth(204)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(10, 14, 10, 14)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
 
         # Highlight that glides behind the selected item when you switch pages.
         self._nav_indicator = QFrame(panel)
@@ -5022,7 +5028,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         cat_panel.setObjectName('settingsNavSurface')
         cat_panel.setFixedWidth(120)
         cat_panel.setStyleSheet(
-            f"QFrame {{ background: {BG}; border-right: 1px solid {LINE}; }}"
+            f"QFrame {{ background: transparent; border: 0; border-right: 1px solid {LINE}; }}"
         )
         cat_lay = QVBoxLayout(cat_panel)
         cat_lay.setContentsMargins(0, 10, 0, 10)
@@ -8722,7 +8728,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _build_right_panel(self) -> QFrame: # Right panel actions
         panel = QFrame()
         panel.setObjectName("rightPanel")
-        panel.setFixedWidth(340)
+        panel.setFixedWidth(326)
 
         column = QVBoxLayout(panel)
         column.setContentsMargins(0, 0, 0, 0)
@@ -9284,6 +9290,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         self._perf_apply_btn = QPushButton("Apply now")
         self._perf_apply_btn.setObjectName("primary")
+        self._perf_apply_btn.setAutoDefault(False)
+        self._perf_apply_btn.setStyleSheet(PRIMARY_BUTTON_QSS)
         self._perf_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._perf_apply_btn.setToolTip("Write the values now. Windows already open keep their settings until relaunched.")
         self._perf_apply_btn.clicked.connect(self._on_perf_apply_now)
@@ -9450,7 +9458,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
 
         AV = ROW_AVATAR_SIZE
-        ITEM_H = AV + 18
+        ITEM_H = AV + 16
 
         for username, data in account_items:
             note = data.get("note", "") if isinstance(data, dict) else ""
@@ -9503,7 +9511,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
             text_col = QVBoxLayout()
             text_col.setContentsMargins(0, 0, 0, 0)
-            text_col.setSpacing(1)
+            text_col.setSpacing(0)
+            text_col.addStretch(1)
             top_line = QHBoxLayout()
             top_line.setContentsMargins(0, 0, 0, 0)
             top_line.setSpacing(8)
@@ -9576,6 +9585,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             status_line.addWidget(status_text)
             status_line.addStretch(1)
             text_col.addLayout(status_line)
+            text_col.addStretch(1)
             self._status_labels[username] = (status_dot, status_text)
 
             row_lay.addLayout(text_col, 1)
