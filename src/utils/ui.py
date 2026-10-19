@@ -2122,11 +2122,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             QComboBox QLineEdit, QAbstractSpinBox QLineEdit {{
                 padding: 0; min-height: 0; border: 0; border-radius: 0; background: transparent;
             }}
-            QSpinBox, QDoubleSpinBox {{
-                background: {INPUT}; border: 1px solid {LINE}; border-radius: 8px;
-                padding: 2px 6px; color: {TEXT};
-            }}
-            QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {FG_ACCENT}; }}
 
             QComboBox {{
                 background: {INPUT}; border: 1px solid {LINE}; border-radius: 10px;
