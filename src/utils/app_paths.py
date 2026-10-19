@@ -67,3 +67,34 @@ def apply_data_dir_argument(argv: list[str]) -> list[str]:
         else:
             print(f"[WARNING] {DATA_DIR_OPTION} needs a folder path and was ignored.", file=sys.stderr)
     return remaining
+
+
+_BUNDLE_ENV_PREFIXES = ("_PYI_", "_MEIPASS", "PYINSTALLER_")
+
+
+def clean_child_environment() -> dict[str, str]:
+    """Environment for starting this app (or a helper copy of it) again.
+
+    The one-file build exports variables (_PYI_*, _MEIPASS2) pointing at this
+    copy's temporary unpack folder. A second copy that inherited them would
+    look for its files there and fail with a "Failed to load Python DLL"
+    style error box. Drop them and anything pointing inside that folder.
+    """
+    bundle_dir = getattr(sys, "_MEIPASS", "") or ""
+    bundle_dir = os.path.normcase(os.path.abspath(bundle_dir)) if bundle_dir else ""
+    environment: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper.startswith(_BUNDLE_ENV_PREFIXES):
+            continue
+        if bundle_dir and bundle_dir in os.path.normcase(value):
+            if upper == "PATH":
+                value = os.pathsep.join(
+                    part for part in value.split(os.pathsep)
+                    if bundle_dir not in os.path.normcase(part)
+                )
+            else:
+                continue
+        environment[key] = value
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment

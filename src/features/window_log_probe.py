@@ -18,6 +18,8 @@ import tempfile
 import threading
 import time
 
+from utils.app_paths import clean_child_environment
+
 
 HELPER_OPTION = "--window-log-probe"
 PROBE_TIMEOUT_SECONDS = 3.0
@@ -131,6 +133,9 @@ def probe_open_log_paths(
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                # A clean environment: the helper is a fresh copy of the app and
+                # must not reuse this copy's unpack folder (it would fail to start).
+                env=clean_child_environment(),
             )
             try:
                 deadline = time.monotonic() + max(0.0, timeout)
@@ -139,11 +144,13 @@ def probe_open_log_paths(
                         return ProbeResult("cancelled")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        print(f"[WARNING] Window log helper did not finish within {timeout:g}s; it was stopped.")
                         return ProbeResult("timeout")
                     stop_event.wait(min(0.05, remaining))
                 if stop_event.is_set():
                     return ProbeResult("cancelled")
                 if process.returncode != 0:
+                    print(f"[WARNING] Window log helper failed to start or run (exit code {process.returncode}).")
                     return ProbeResult("error")
                 return _read_result(result_path, key)
             finally:

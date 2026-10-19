@@ -9965,11 +9965,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             top_line.addWidget(name_lbl)
             self._account_name_labels[username] = name_lbl
 
-            # Note display (kept even when empty so a new note appears in place)
-            sep = QLabel("|")
+            # Note display (kept even when empty so a new note appears in place).
+            # Created inside the row: a parentless label made visible would
+            # flash on screen as its own little window.
+            sep = QLabel("|", row)
             sep.setObjectName("noteSep")
             sep.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-            note_lbl = QLabel(note)
+            note_lbl = QLabel(note, row)
             note_lbl.setObjectName("noteText")
             note_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
             top_line.addWidget(sep)
@@ -10029,7 +10031,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
             row_lay.addLayout(text_col, 1)
 
-            lock_lbl = QLabel()
+            lock_lbl = QLabel(row)
             lock_lbl.setPixmap(icons.pixmap("lock", ACCENT_BRIGHT, 18))
             lock_lbl.setToolTip("Locked: Kill All Roblox keeps this account's Roblox open")
             lock_lbl.setStyleSheet("background: transparent;")
