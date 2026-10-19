@@ -365,6 +365,7 @@ def create_accounts(
                     next_start[0] = time.monotonic() + interval
 
             finished = [0]
+            stopped_count = [0]
 
             def _report_progress() -> None:
                 if on_progress is None:
@@ -400,15 +401,22 @@ def create_accounts(
                             browser=browser,
                             window_slot=slot_index,
                             window_slot_count=worker_count,
+                            stop_event=stop_event,
                         ))
-                        if not result:
+                        if not result and stop_event.is_set():
+                            with failure_lock:
+                                stopped_count[0] += 1  # closed by Stop, not a real failure
+                        elif not result:
                             with failure_lock:
                                 failure_results.append(result)
                     except Exception as e:
                         print(f"[Account Creator] Browser slot failed: {e}")
                         with failure_lock:
-                            failure_results.append(OperationResult.failure(
-                                "ACCOUNT_CREATOR_ERROR", "Account Creator", str(e)))
+                            if stop_event.is_set():
+                                stopped_count[0] += 1
+                            else:
+                                failure_results.append(OperationResult.failure(
+                                    "ACCOUNT_CREATOR_ERROR", "Account Creator", str(e)))
                     finally:
                         with failure_lock:
                             finished[0] += 1
@@ -436,6 +444,7 @@ def create_accounts(
                 "created": new_names,
                 "failures": [{"code": r.code, "message": r.message} for r in failure_results],
                 "stopped": stopped,
+                "stopped_in_progress": stopped_count[0],
             }
             if stopped:
                 print(f"[Account Creator] Stopped. {len(new_names)} account(s) were created.")

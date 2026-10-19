@@ -55,3 +55,24 @@ class CreatorStopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultBrowserTests(unittest.TestCase):
+    def test_brave_is_the_default_and_chrome_is_the_fallback(self):
+        from features import account_actions as actions
+        found = {"chrome": OperationResult.success(data={"browser": "chrome"})}
+        missing = OperationResult.failure("BROWSER_NOT_FOUND", "t", "m")
+        with patch.object(actions, "load_ui_settings", return_value={}), \
+                patch.object(actions.browsers_mod, "resolve_browser", side_effect=lambda b: found.get(b, missing)):
+            self.assertEqual(actions.get_browser_result().data["browser"], "chrome")
+        found["brave"] = OperationResult.success(data={"browser": "brave"})
+        with patch.object(actions, "load_ui_settings", return_value={}), \
+                patch.object(actions.browsers_mod, "resolve_browser", side_effect=lambda b: found.get(b, missing)):
+            self.assertEqual(actions.get_browser_result().data["browser"], "brave")
+
+    def test_a_browser_picked_in_settings_is_kept(self):
+        from features import account_actions as actions
+        with patch.object(actions, "load_ui_settings", return_value={"browser_type": "firefox"}), \
+                patch.object(actions.browsers_mod, "resolve_browser", return_value=OperationResult.success()) as resolve:
+            actions.get_browser_result()
+        resolve.assert_called_once_with("firefox")

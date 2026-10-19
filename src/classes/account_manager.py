@@ -813,7 +813,7 @@ class RobloxAccountManager:
             print(f"[ERROR] Error extracting user info: {e}")
             return None, None, None, None, ""
     
-    def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", javascript_list=None, browser=None, browser_path=None, password_list=None, window_slot=None, window_slot_count=None, center_window=False):
+    def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", javascript_list=None, browser=None, browser_path=None, password_list=None, window_slot=None, window_slot_count=None, center_window=False, stop_event=None):
         # Add accounts through one or more browser instances.
         # javascript_list and password_list map each value to the same browser index.
         if javascript_list:
@@ -930,6 +930,21 @@ class RobloxAccountManager:
             
             print(f"[INFO] All {len(drivers)} browser(s) opened. Waiting for logins...")
 
+            logins_done = threading.Event()
+            if stop_event is not None:
+                # Account Creator "Stop": close these browser windows right away.
+                def _close_on_stop():
+                    while not stop_event.wait(0.5):
+                        if logins_done.is_set():
+                            return
+                    for open_driver in list(drivers):
+                        try:
+                            open_driver.quit()
+                        except Exception:
+                            pass
+                closer = threading.Thread(target=_close_on_stop, daemon=True, name="browser-stop-watch")
+                closer.start()
+
             def wait_for_instance(driver_index):
                 driver = drivers[driver_index]
                 try:
@@ -1000,6 +1015,7 @@ class RobloxAccountManager:
             
             for thread in threads:
                 thread.join()
+            logins_done.set()
 
             if success_count:
                 with self._accounts_lock:

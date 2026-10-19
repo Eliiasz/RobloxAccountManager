@@ -967,10 +967,24 @@ def import_user_pass(manager, pairs: list[tuple[str, str]], on_done: Callable[[b
     threading.Thread(target=_worker, daemon=True, name="import-user-pass").start()
 
 
+DEFAULT_BROWSER = "brave"
+_DEFAULT_BROWSER_FALLBACKS = ("brave", "chrome", "edge")
+
+
 def get_browser_result() -> OperationResult:
+    """The browser for logins. A browser picked in Settings is always used;
+    otherwise Brave, falling back to Chrome and Edge when it isn't installed."""
     S = load_ui_settings()
-    browser_type = S.get("browser_type", "chrome")
-    return browsers_mod.resolve_browser(browser_type)
+    chosen = S.get("browser_type")
+    if chosen:
+        return browsers_mod.resolve_browser(chosen)
+    for candidate in _DEFAULT_BROWSER_FALLBACKS:
+        result = browsers_mod.resolve_browser(candidate)
+        if result:
+            if candidate != DEFAULT_BROWSER:
+                print(f"[INFO] Brave isn't installed, using {candidate.title()} for logins.")
+            return result
+    return browsers_mod.resolve_browser(DEFAULT_BROWSER)
 
 
 def add_account_browser(manager, on_done: Callable[[bool, str], None] = lambda *_: None, javascript: str = "", center_window: bool = False) -> None:

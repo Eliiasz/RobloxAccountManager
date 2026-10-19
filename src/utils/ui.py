@@ -5182,10 +5182,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             sa.setStyleSheet("QScrollArea { background: transparent; border: none; }")
             w = QWidget()
             w.setStyleSheet("background: transparent;")
+            # A fixed-width column keeps each value box next to its label
+            # instead of at the far edge of a wide window.
+            w.setMaximumWidth(680)
             lay = QVBoxLayout(w)
             lay.setContentsMargins(16, 14, 16, 14)
             lay.setSpacing(6)
             sa.setWidget(w)
+            sa.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             return sa, lay
 
         S = actions.load_ui_settings() # Snapshot for initial values
@@ -6058,7 +6062,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         _br_lbl.setWordWrap(True)
         f.addWidget(_br_lbl)
 
-        _cur_br = S.get("browser_type", "chrome")
+        _cur_br = S.get("browser_type", actions.DEFAULT_BROWSER)
         _br_grp = QButtonGroup(sa)
         for br_key, br_label, br_tip in [
             ("chrome", "Google Chrome",
@@ -12278,7 +12282,8 @@ class _CreatorProgressDialog(QDialog):
         self._status = QLabel(f"0 of {requested} created")
         self._status.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
         lay.addWidget(self._status)
-        hint = QLabel("Complete any CAPTCHA in the browser windows. Press Stop to start no new accounts.")
+        hint = QLabel("Complete any CAPTCHA in the browser windows. Stop closes the signup windows "
+                      "and keeps every account already created.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
         lay.addWidget(hint)
@@ -12297,10 +12302,9 @@ class _CreatorProgressDialog(QDialog):
         self._stop_event.set()
         self._stop_btn.setEnabled(False)
         self._stop_btn.setText("Stopping…")
-        self._status.setText(self._status.text() + " · stopping: no new accounts will start. "
-                             "Close any signup browser that is still open to end it now.")
+        self._status.setText(self._status.text() + " · stopping: closing the signup windows…")
         self._status.setWordWrap(True)
-        print("[Account Creator] Stop pressed: no new accounts will be started.")
+        print("[Account Creator] Stop pressed: closing the signup windows, no new accounts will start.")
 
     def update_progress(self, created: int, finished: int, requested: int) -> None:
         if not self._stop_event.is_set():
@@ -12330,13 +12334,16 @@ class _CreatorResultsDialog(QDialog):
         failures = list(report.get("failures") or [])
         requested = int(report.get("requested") or 0)
         stopped = bool(report.get("stopped"))
+        stopped_open = int(report.get("stopped_in_progress") or 0)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
+        not_started = max(0, requested - len(created) - len(failures) - stopped_open)
         head = QLabel(("Stopped. " if stopped else "Done. ")
                       + f"{len(created)} created" + (f" · {len(failures)} failed" if failures else "")
-                      + (f" · {requested - len(created) - len(failures)} not started" if stopped else ""))
+                      + (f" · {stopped_open} stopped" if stopped_open else "")
+                      + (f" · {not_started} not started" if stopped and not_started else ""))
         head.setStyleSheet("font-size: 16px; font-weight: 700;")
         lay.addWidget(head)
         sub = QLabel(f"{len(created)} of {requested} requested accounts were added to your Account List.")
