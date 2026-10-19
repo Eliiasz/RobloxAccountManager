@@ -94,3 +94,36 @@ class FirstAloneLaunchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EveryJoinUsesTheQueueTests(unittest.TestCase):
+    def test_send_with_queue_sends_only_the_first_batch_now(self):
+        sent = []
+        window = SimpleNamespace(_queue_or_all=lambda names, send: names[:5])
+        ui.AccountManagerUIQt._send_with_queue(window, [f"a{i}" for i in range(20)], sent.append)
+        self.assertEqual(sent, [[f"a{i}" for i in range(5)]])
+
+    def test_join_user_box_goes_through_the_queue(self):
+        window = SimpleNamespace(
+            _join_target_edit=SimpleNamespace(currentText=lambda: "target"),
+            _get_selected_usernames=lambda: ["a", "b", "c"],
+            _guard_invalid=lambda names: True,
+            _confirm_launch=lambda label, names: True,
+            _remember_join_target=Mock(),
+            _send_with_queue=Mock(),
+        )
+        ui.AccountManagerUIQt._on_join_target(window)
+        window._send_with_queue.assert_called_once()
+        self.assertEqual(window._send_with_queue.call_args.args[0], ["a", "b", "c"])
+
+
+class GroupBulkMoveTests(unittest.TestCase):
+    def test_moving_many_accounts_saves_once(self):
+        from features import groups
+        with patch.object(groups, "_load", return_value={"assignments": {"a": "old"}}), \
+                patch.object(groups, "_save") as save:
+            groups.set_accounts_group(["a", "b"], "new")
+            saved = save.call_args.args[0]
+            self.assertEqual(saved["assignments"], {"a": "new", "b": "new"})
+            groups.set_accounts_group(["a"], None)
+        self.assertEqual(save.call_count, 2)

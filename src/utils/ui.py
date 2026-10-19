@@ -1760,6 +1760,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._presence_scanner = None
         self._presence_dots: dict[str, QLabel] = {}
         self._status_labels: dict[str, tuple[QLabel, QLabel]] = {}
+        self._lock_labels: dict[str, QLabel] = {}
+        self._note_labels: dict[str, tuple[QLabel, QLabel]] = {}
         self._online_usernames: set[str] = set()
         self._activity_snapshot: dict[str, dict] = {}
         self._activity_widgets: dict[str, QWidget] = {}
@@ -9573,6 +9575,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._account_name_labels.clear()
         self._account_rows.clear()
         self._status_labels.clear()
+        self._lock_labels.clear()
+        self._note_labels.clear()
         account_items = list(self.manager.accounts.items())
         activity_enabled = bool(
             actions.load_ui_settings().get("presence_indicator", False)
@@ -9676,15 +9680,18 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             top_line.addWidget(name_lbl)
             self._account_name_labels[username] = name_lbl
 
-            if note: # Note display
-                sep = QLabel("|")
-                sep.setObjectName("noteSep")
-                sep.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-                note_lbl = QLabel(note)
-                note_lbl.setObjectName("noteText")
-                note_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-                top_line.addWidget(sep)
-                top_line.addWidget(note_lbl)
+            # Note display (kept even when empty so a new note appears in place)
+            sep = QLabel("|")
+            sep.setObjectName("noteSep")
+            sep.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            note_lbl = QLabel(note)
+            note_lbl.setObjectName("noteText")
+            note_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            top_line.addWidget(sep)
+            top_line.addWidget(note_lbl)
+            sep.setVisible(bool(note))
+            note_lbl.setVisible(bool(note))
+            self._note_labels[username] = (sep, note_lbl)
 
             if activity_enabled:
                 activity_container = QWidget(row)
@@ -9737,12 +9744,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
             row_lay.addLayout(text_col, 1)
 
-            if isinstance(data, dict) and data.get(actions.LOCK_KEY):
-                lock_lbl = QLabel()
-                lock_lbl.setPixmap(icons.pixmap("lock", ACCENT_BRIGHT, 18))
-                lock_lbl.setToolTip("Locked: Kill All Roblox keeps this account's Roblox open")
-                lock_lbl.setStyleSheet("background: transparent;")
-                row_lay.addWidget(lock_lbl)
+            lock_lbl = QLabel()
+            lock_lbl.setPixmap(icons.pixmap("lock", ACCENT_BRIGHT, 18))
+            lock_lbl.setToolTip("Locked: Kill All Roblox keeps this account's Roblox open")
+            lock_lbl.setStyleSheet("background: transparent;")
+            lock_lbl.setVisible(bool(isinstance(data, dict) and data.get(actions.LOCK_KEY)))
+            row_lay.addWidget(lock_lbl)
+            self._lock_labels[username] = lock_lbl
 
             menu_btn = QToolButton()
             menu_btn.setObjectName("rowMenu")
@@ -9889,21 +9897,30 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._rebuild_group_bar()
         self._refresh_account_list()
 
-    def _on_assign_to_group(self, usernames, group_name: str):
+    def _on_assign_to_group(self, usernames, group_name: str | None):
         if isinstance(usernames, str):
             usernames = [usernames]
-        for username in usernames:
-            if not self._save_group_change(groups.set_account_group, username, group_name):
-                break
-        self._refresh_account_list()
+        if not self._save_group_change(groups.set_accounts_group, list(usernames), group_name):
+            return
+        self._after_group_move(usernames, group_name)
 
     def _on_remove_from_group(self, usernames):
-        if isinstance(usernames, str):
-            usernames = [usernames]
-        for username in usernames:
-            if not self._save_group_change(groups.set_account_group, username, None):
-                break
-        self._refresh_account_list()
+        self._on_assign_to_group(usernames, None)
+
+    def _after_group_move(self, usernames, group_name: str | None) -> None:
+        if getattr(self, "_account_query", ""):
+            self._refresh_account_list()  # the search may match group names
+            return
+        if self._current_group is None or group_name == self._current_group:
+            return  # the visible list does not change
+        # Viewing one group: only the moved accounts leave the list.
+        moved = set(usernames)
+        for row in range(self._account_list.count() - 1, -1, -1):
+            item = self._account_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) in moved:
+                self._account_list.takeItem(row)
+        if self._account_list.count() == 0:
+            self._refresh_account_list()
 
     def _load_avatars_async(self):
         avatars.sync_missing_avatar_cache(
@@ -10394,6 +10411,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 on_done=self._launch_callback(usernames),
             )
 
+    def _send_with_queue(self, usernames: list[str], send) -> None:
+        """Send now, or start a Batch Queue when it is on and the selection is bigger than a batch."""
+        first = self._queue_or_all(list(usernames), send)
+        send(first)
+
     _RECENT_TARGETS_SETTING = "recent_join_targets"
 
     def _recent_join_targets(self) -> list[str]:
@@ -10428,11 +10450,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
         self._remember_join_target(target)
         print(f"[INFO] Joining {target}'s server with {len(usernames)} account(s)")
-        actions.join_user(
-            self.manager,
+        # Each batch looks up where the target is at that moment.
+        self._send_with_queue(
             usernames,
-            target,
-            on_done=self._launch_callback(usernames),
+            lambda batch: actions.join_user(
+                self.manager, batch, target, on_done=self._launch_callback(batch),
+            ),
         )
 
     def _on_join_user(self):
@@ -10451,11 +10474,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if not self._confirm_launch("Join User", usernames):
             return
 
-        actions.join_user(
-            self.manager,
+        target = target_user.strip()
+        self._send_with_queue(
             usernames,
-            target_user.strip(),
-            on_done=self._emit_launch_done
+            lambda batch: actions.join_user(
+                self.manager, batch, target, on_done=self._launch_callback(batch),
+            ),
         )
 
     def _on_join_job_id(self):
@@ -10479,12 +10503,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if not self._confirm_launch("Join by Job ID", usernames):
             return
 
-        actions.join_job_id(
-            self.manager,
+        job = job_id.strip()
+        self._send_with_queue(
             usernames,
-            place_id,
-            job_id.strip(),
-            on_done=self._emit_launch_done
+            lambda batch: actions.join_job_id(
+                self.manager, batch, place_id, job, on_done=self._launch_callback(batch),
+            ),
         )
 
     def _on_join_small_server(self):
@@ -10504,11 +10528,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if not self._confirm_launch("Join Small Server", usernames):
             return
 
-        actions.join_small_server(
-            self.manager,
+        self._send_with_queue(
             usernames,
-            place_id,
-            on_done=self._emit_launch_done
+            lambda batch: actions.join_small_server(
+                self.manager, batch, place_id, on_done=self._launch_callback(batch),
+            ),
         )
 
     # Edit Note
@@ -10522,10 +10546,20 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         current = actions.get_note(self.manager, first) if len(usernames) == 1 else ""
         dlg = _EditNoteDialog(first if len(usernames) == 1 else f"{len(usernames)} accounts", current, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            for u in usernames:
-                actions.set_note(self.manager, u, dlg.note_value)
+            note = dlg.note_value
+            actions.set_notes_in_memory(self.manager, usernames, note)
             print(f"[INFO] Note updated for {len(usernames)} account(s)")
-            self._refresh_account_list()
+            if getattr(self, "_account_query", ""):
+                self._refresh_account_list()  # the search may match notes
+            else:
+                for u in usernames:
+                    labels = self._note_labels.get(u)
+                    if labels and all(isValid(w) for w in labels):
+                        sep, note_lbl = labels
+                        note_lbl.setText(note)
+                        sep.setVisible(bool(note))
+                        note_lbl.setVisible(bool(note))
+            self._save_accounts_async()
 
     # Launch Roblox Home
     def _on_launch_home(self):
@@ -10599,14 +10633,42 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._poll_queue()  # the queue sees the closed clients and moves on
 
     def _set_accounts_locked(self, usernames: list[str], locked: bool) -> None:
-        try:
-            actions.set_accounts_locked(self.manager, usernames, locked)
-        except OSError as exc:
-            _show_error(self, "Lock Account", f"The change could not be saved:\n{exc}")
-            return
+        # Instant: change the accounts in memory, flip the 🔒 on just those
+        # rows, and save in the background.
+        actions.set_accounts_locked(self.manager, usernames, locked, save=False)
+        for name in usernames:
+            label = self._lock_labels.get(name)
+            if label is not None and isValid(label):
+                label.setVisible(bool(locked))
         word = "Locked" if locked else "Unlocked"
         print(f"[INFO] {word} {len(usernames)} account(s): {', '.join(usernames)}")
-        self._refresh_account_list()
+        self._save_accounts_async()
+
+    def _save_accounts_async(self) -> None:
+        """Save accounts off the UI thread. Several quick changes share one save."""
+        guard = self.__dict__.setdefault("_save_guard", threading.Lock())
+        with guard:
+            if self.__dict__.get("_save_running"):
+                self._save_pending = True
+                return
+            self._save_running = True
+            self._save_pending = False
+        manager = self.manager
+
+        def _worker():
+            while True:
+                try:
+                    manager.save_accounts()
+                except Exception as exc:
+                    print(f"[ERROR] Could not save accounts: {exc}")
+                with guard:
+                    if self._save_pending:
+                        self._save_pending = False
+                        continue
+                    self._save_running = False
+                    return
+
+        threading.Thread(target=_worker, daemon=True, name="SaveAccounts").start()
 
     def _launch_callback(self, usernames: list[str]):
         batch = list(usernames)

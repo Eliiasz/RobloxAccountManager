@@ -2291,8 +2291,12 @@ def locked_usernames(manager) -> set[str]:
     return {name for name, data in items if isinstance(data, dict) and data.get(LOCK_KEY)}
 
 
-def set_accounts_locked(manager, usernames, locked: bool) -> int:
-    """Lock or unlock accounts (Kill All leaves locked accounts' Roblox open)."""
+def set_accounts_locked(manager, usernames, locked: bool, save: bool = True) -> int:
+    """Lock or unlock accounts (Kill All leaves locked accounts' Roblox open).
+
+    With save=False only the in-memory accounts change; the caller saves
+    (the UI saves in the background so the window never freezes).
+    """
     changed = 0
     accounts_lock = getattr(manager, "_accounts_lock", None)
     if accounts_lock is not None:
@@ -2308,12 +2312,27 @@ def set_accounts_locked(manager, usernames, locked: bool) -> int:
                 data[LOCK_KEY] = True
             else:
                 data.pop(LOCK_KEY, None)
-        if changed:
+        if changed and save:
             manager.save_accounts()
     finally:
         if accounts_lock is not None:
             accounts_lock.release()
     return changed
+
+
+def set_notes_in_memory(manager, usernames, note: str) -> None:
+    """Change notes without saving; the caller saves once afterwards."""
+    accounts_lock = getattr(manager, "_accounts_lock", None)
+    if accounts_lock is not None:
+        accounts_lock.acquire()
+    try:
+        for name in usernames:
+            data = manager.accounts.get(name)
+            if isinstance(data, dict):
+                data["note"] = note
+    finally:
+        if accounts_lock is not None:
+            accounts_lock.release()
 
 
 def locked_roblox_pids(manager) -> set[int]:

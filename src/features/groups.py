@@ -86,6 +86,19 @@ def set_account_group(username: str, group_name: Optional[str]) -> None:
         _save(data)
 
 
+def set_accounts_group(usernames, group_name: Optional[str]) -> None:
+    """Move several accounts at once with a single save."""
+    with _LOCK:
+        data = _load()
+        assignments = data.setdefault("assignments", {})
+        for username in usernames:
+            if group_name is None:
+                assignments.pop(username, None)
+            else:
+                assignments[username] = group_name
+        _save(data)
+
+
 def create_group(name: str) -> bool:
     name = name.strip()
     if not name:
