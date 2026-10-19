@@ -2098,6 +2098,22 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             }}
             QListWidget#recentList::item {{ min-height: 40px; font-size: 13px; }}
 
+            QTreeWidget, QTreeView, QTableWidget, QTableView {{
+                background: {LIST_BG}; alternate-background-color: {PANEL};
+                border: 1px solid {LINE}; border-radius: 12px; outline: none;
+                color: {TEXT}; font-size: 12px;
+                selection-background-color: {ACCENT_TINT}; selection-color: {TEXT};
+            }}
+            QTreeView::item, QTableView::item {{ padding: 4px 2px; }}
+            QTreeView::item:hover, QTableView::item:hover {{ background: {RAISED}; }}
+            QTreeView::item:selected, QTableView::item:selected {{ background: {ACCENT_TINT}; color: {TEXT}; }}
+            QHeaderView {{ background: transparent; border: 0; }}
+            QHeaderView::section {{
+                background: {PANEL}; color: {MUTED}; border: 0; border-bottom: 1px solid {LINE};
+                padding: 6px 8px; font-size: 11px; font-weight: 700;
+            }}
+            QTableCornerButton::section {{ background: {PANEL}; border: 0; }}
+
             QLabel#accountName {{ color: {TEXT}; font-size: 13px; background: transparent; }}
             QLabel#accountStatus {{ color: {MUTED}; font-size: 11px; background: transparent; }}
             QLabel#noteSep {{ color: #6B7280; font-size: 12px; background: transparent; }}
