@@ -13,6 +13,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtMultimedia import QVideoFrame
 
 from features import themes
+from utils import ui as ui_mod
 from utils.ui import _BackgroundController
 
 
@@ -132,7 +133,7 @@ class BackgroundTests(unittest.TestCase):
         menu.close()
 
     def test_color_customization_preserves_originals(self):
-        self.input.setStyleSheet('color: #EDEDED; border: 1px solid #242424; background: #1A1A1A;')
+        self.input.setStyleSheet(f'color: {ui_mod.TEXT}; border: 1px solid {ui_mod.LINE}; background: {ui_mod.INPUT};')
         original = self.input.styleSheet()
         self.controller.configure(True, self.path, 50)
         self.controller.colors.update(text='#00ff00', muted='#ff00ff', outline='#ffffff', tint='#002244')

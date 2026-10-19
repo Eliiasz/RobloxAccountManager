@@ -285,8 +285,8 @@ class FieldIntegrationTests(unittest.TestCase):
         self.assertEqual(window.minimumSize(), ui.MIN_WINDOW_SIZE)
         labels = [label for label in window.findChildren(ui.QLabel) if label.text() == "Place ID"]
         label = next(label for label in labels if label.isVisible())
-        self.assertGreater(button.mapTo(window, button.rect().topLeft()).x(),
-                           label.mapTo(window, label.rect().topRight()).x())
+        self.assertGreater(button.mapTo(window, button.rect().topLeft()).y(),
+                           label.mapTo(window, label.rect().bottomLeft()).y())
         with patch.object(ui, "_GamesSelectorDialog") as dialog:
             dialog.return_value.exec.return_value = QDialog.DialogCode.Rejected
             button.click()

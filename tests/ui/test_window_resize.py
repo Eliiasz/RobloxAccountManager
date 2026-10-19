@@ -45,6 +45,11 @@ class WindowResizeTests(unittest.TestCase):
         settings_store.invalidate()
         self.addCleanup(settings_store.invalidate)
 
+    def fit(self, width, height):
+        # What the window can reach on this screen (CI screens can be small).
+        screen = QApplication.primaryScreen().availableGeometry().size()
+        return QSize(max(W, min(width, screen.width())), max(H, min(height, screen.height())))
+
     def window(self):
         window = ResizeWindow()
         self.addCleanup(window.deleteLater)
@@ -66,7 +71,7 @@ class WindowResizeTests(unittest.TestCase):
         window.resize(W + 60, H + 80)
         window.close()
         self.assertEqual(settings_store.get("main_window_size"), [W + 60, H + 80])
-        self.assertEqual(self.window().size(), QSize(W + 60, H + 80))
+        self.assertEqual(self.window().size(), self.fit(W + 60, H + 80))
 
     def test_bad_or_too_small_saved_sizes_cannot_break_startup(self):
         for value in (None, {}, [True, 600], ["700", 600], [700], [-1, 600]):
@@ -99,7 +104,7 @@ class WindowResizeTests(unittest.TestCase):
                             Qt.KeyboardModifier.NoModifier)
         QApplication.sendEvent(grip, event)
         QTest.mouseRelease(grip, Qt.MouseButton.LeftButton, pos=local)
-        self.assertEqual(window.size(), QSize(W + 60, H + 60))
+        self.assertEqual(window.size(), self.fit(W + 60, H + 60))
 
         QTest.mousePress(grip, Qt.MouseButton.LeftButton, pos=local)
         initial = grip.mapToGlobal(local)

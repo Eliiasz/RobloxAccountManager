@@ -44,7 +44,7 @@ PATHS: dict[str, str] = {
     "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M4 7l8 6 8-6"/>',
     "shield_check": '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
     "chevron_right": '<path d="M10 6l6 6-6 6"/>',
-    "minimize": '<path d="M6 12h12"/>',
+    "minimize": '<rect x="6" y="11" width="12" height="2" rx="1"/>',
     "maximize": '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
     "restore": '<rect x="5" y="8" width="11" height="11" rx="1.5"/><path d="M8 8V5h11v11h-3"/>',
     "close": '<path d="M7 7l10 10M17 7L7 17"/>',
