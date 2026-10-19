@@ -2192,10 +2192,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             }}
             QPushButton#iconButton:hover {{ background: {RAISED}; border: 1px solid {ACCENT_TINT_LINE}; }}
             QPushButton#discordRound {{
-                background: {RAISED}; border: 1px solid {LINE}; border-radius: 19px;
-                min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px; padding: 0;
+                background: transparent; border: 2px solid transparent; border-radius: 20px;
+                min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px; padding: 0;
             }}
-            QPushButton#discordRound:hover {{ background: {HOVER}; }}
+            QPushButton#discordRound:hover {{ background: transparent; border: 2px solid #7983F5; }}
+            QPushButton#discordRound:pressed {{ background: transparent; border: 2px solid #5865F2; }}
 
             QToolButton#splitArrow {{
                 background: {INPUT}; border: 1px solid {LINE}; border-radius: 10px;
@@ -5498,31 +5499,18 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         f.addLayout(rename_mode_row)
         self._update_rename_mode_controls()
 
-        f.addWidget(_sec("RAM USAGE"))
-        self._sett_monitoring_chk = _chk(
-            "presence_indicator", "Show RAM Usage of Running Accounts",
-            "Show how much RAM (and CPU) each running Roblox account uses, next to its name,\n"
-            "plus a total above the account list. Updates every 5 seconds.",
-            on_change=self._on_sett_presence_indicator,
-        )
-        f.addWidget(self._sett_monitoring_chk)
-        self._sett_ram_percent_chk = _chk(
-            "ram_show_percent", "Also show RAM as % of total PC memory",
-            "Example: 812 MB (5%). Uses your total installed memory.",
-            on_change=lambda _on: self._update_activity_rows(),
-        )
-        f.addLayout(_sub_indent(self._sett_ram_percent_chk))
-        self._sett_ram_total_chk = _chk(
-            "ram_show_total", "Show total for all running accounts",
-            "Shows e.g. \"4 running · 2.6 GB (16%)\" above the account list.",
-            default=True,
-            on_change=lambda _on: self._update_activity_rows(),
-        )
-        f.addLayout(_sub_indent(self._sett_ram_total_chk))
-
-        # Start scanner immediately if the setting is already on
-        if actions.load_ui_settings().get("presence_indicator", False):
-            self._start_presence_scanner()
+        f.addWidget(_sec("RAM"))
+        _ram_moved = QLabel("RAM Usage and RAM Optimization are in the Performance window "
+                            "(Accounts page, under Recent games).")
+        _ram_moved.setWordWrap(True)
+        _ram_moved.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(_ram_moved)
+        _ram_row = QHBoxLayout()
+        _ram_btn = QPushButton("Open Performance")
+        _ram_btn.clicked.connect(lambda: self._open_settings_sheet("performance"))
+        _ram_row.addWidget(_ram_btn)
+        _ram_row.addStretch(1)
+        f.addLayout(_ram_row)
 
         f.addWidget(_sec("WINDOW GRID"))
         self._sett_window_grid_chk = _chk(
@@ -5590,37 +5578,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             on_change=self._on_sett_installer_fix,
         )
         f.addWidget(self._sett_installer_fix_chk)
-
-        f.addWidget(_sec("RAM OPTIMIZATION"))
-        self._sett_boost_ram_chk = _chk(
-            "optimize_roblox_ram", "Boost Roblox RAM Limit (May Cause Crash)",
-            "Periodically trim Roblox working-set memory to reduce RAM usage.\n"
-            "May causes crash when using this feature, use with caution.",
-            on_change=self._on_sett_boost_ram,
-        )
-        f.addWidget(self._sett_boost_ram_chk)
-
-        ram_row = QHBoxLayout()
-        ram_row.setContentsMargins(20, 0, 0, 0)
-        _ram_lbl = QLabel("Low RAM Limit (MB)")
-        _ram_lbl.setToolTip(
-            "Target memory limit per Roblox process in megabytes.\n"
-            "Processes using more than this will have their working set trimmed."
-        )
-        ram_row.addWidget(_ram_lbl)
-        ram_row.addStretch(1)
-        self._sett_ram_spin = QSpinBox()
-        self._sett_ram_spin.setRange(100, 8192)
-        self._sett_ram_spin.setValue(int(S.get("optimize_roblox_ram_limit_mb", 750)))
-        self._sett_ram_spin.setSuffix(" MB")
-        self._sett_ram_spin.setFixedWidth(90)
-        self._sett_ram_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        self._sett_ram_spin.setEnabled(S.get("optimize_roblox_ram", False))
-        self._sett_ram_spin.valueChanged.connect(
-            lambda v: actions.save_ui_setting("optimize_roblox_ram_limit_mb", v)
-        )
-        ram_row.addWidget(self._sett_ram_spin)
-        f.addLayout(ram_row)
 
         f.addWidget(_sec("ROBLOX DOWNLOADER"))
         _roblox_downloader_desc = QLabel(
@@ -7552,9 +7509,24 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
 
     def _update_ram_total(self) -> None:
-        # The header now shows how many Roblox windows are running (see
-        # _poll_running_count); RAM stays on each account row.
-        return
+        count = getattr(self, "_last_running_count", None)
+        if count is not None:
+            self._on_running_count(count, from_poll=False)
+
+    def _running_header_text(self, count: int) -> tuple[str, str]:
+        text = f"{count} running"
+        tip = "Roblox windows running on this PC"
+        settings = actions.load_ui_settings()
+        if settings.get("presence_indicator", False) and settings.get("ram_show_total", True):
+            running = [m for m in self._activity_snapshot.values() if m.get("ram_available")]
+            if running:
+                total = sum(float(m.get("ram_mb", 0.0) or 0.0) for m in running)
+                text += f" · {self._format_mb(total)}"
+                pc_total = self._total_ram_mb()
+                if pc_total:
+                    text += f" ({total / pc_total * 100:.0f}%)"
+                tip += "\nRAM used by the running accounts (% of total PC memory)"
+        return text, tip
 
     def _start_running_counter(self) -> None:
         self._running_polling = False
@@ -7582,12 +7554,16 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         threading.Thread(target=_worker, daemon=True, name="RunningCount").start()
 
-    def _on_running_count(self, count: int) -> None:
-        self._running_polling = False
+    def _on_running_count(self, count: int, from_poll: bool = True) -> None:
+        if from_poll:
+            self._running_polling = False
         label = getattr(self, "_running_lbl", None)
         if label is None or not isValid(label) or count < 0:
             return
-        label.setText(f"{count} running")
+        self._last_running_count = count
+        text, tip = self._running_header_text(count)
+        label.setText(text)
+        label.setToolTip(tip)
         label.setStyleSheet(f"color: {ONLINE_GREEN if count else MUTED};")
 
     def _update_activity_rows(self) -> None:
@@ -8777,17 +8753,26 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             _discord_path = get_resource_path("assets", "discordlogo.png")
         discord_btn = QPushButton()
         discord_btn.setObjectName("discordRound")
+        discord_btn.setProperty("_motion_attached", True)  # no square hover tint on the round button
         discord_btn.setToolTip("Join Discord server")
         discord_btn.setAccessibleName("Join Discord server")
         discord_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         if os.path.exists(_discord_path):
-            _dpix = QPixmap(_discord_path).scaled(
-                40, 40,
+            _dsrc = QPixmap(_discord_path)
+            # The logo file has empty space around the circle; crop it so the
+            # circle fills the button.
+            _margin = round(_dsrc.width() * 0.1225)
+            if _dsrc.width() > 2 * _margin:
+                _dsrc = _dsrc.copy(_margin, _margin, _dsrc.width() - 2 * _margin, _dsrc.height() - 2 * _margin)
+            _ratio = max(1.0, self.devicePixelRatioF())
+            _dpix = _dsrc.scaled(
+                round(34 * _ratio), round(34 * _ratio),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
+            _dpix.setDevicePixelRatio(_ratio)
             discord_btn.setIcon(QIcon(_dpix))
-            discord_btn.setIconSize(QSize(20, 20))
+            discord_btn.setIconSize(QSize(34, 34))
         discord_btn.clicked.connect(
             lambda: webbrowser.open(self.DISCORD_SERVER_URL)
         )
@@ -9293,6 +9278,71 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "perf_quality", roblox_settings_mod.PERFORMANCE_QUALITY_MIN,
             roblox_settings_mod.PERFORMANCE_QUALITY_MAX, 1, "level")
         f.addLayout(_q_row)
+
+        f = self._sheet_group(
+            body, "RAM usage", "gauge",
+            "Show how much RAM (and CPU) each running Roblox account uses, next to its name. "
+            "Updates every 5 seconds.",
+        )
+        self._sett_monitoring_chk = self._settings_checkbox(
+            "presence_indicator", "Show RAM Usage of Running Accounts",
+            "Show how much RAM (and CPU) each running Roblox account uses, next to its name,\n"
+            "plus a total above the account list. Updates every 5 seconds.",
+            on_change=self._on_sett_presence_indicator,
+        )
+        f.addWidget(self._sett_monitoring_chk)
+        sub = QVBoxLayout()
+        sub.setContentsMargins(26, 0, 0, 0)
+        sub.setSpacing(10)
+        self._sett_ram_percent_chk = self._settings_checkbox(
+            "ram_show_percent", "Also show RAM as % of total PC memory",
+            "Example: 812 MB (5%). Uses your total installed memory.",
+            on_change=lambda _on: self._update_activity_rows(),
+        )
+        sub.addWidget(self._sett_ram_percent_chk)
+        self._sett_ram_total_chk = self._settings_checkbox(
+            "ram_show_total", "Show total for all running accounts",
+            "Shows e.g. \"4 running · 2.6 GB (16%)\" above the account list.",
+            default=True,
+            on_change=lambda _on: self._update_activity_rows(),
+        )
+        sub.addWidget(self._sett_ram_total_chk)
+        f.addLayout(sub)
+
+        f = self._sheet_group(
+            body, "RAM optimization", "bolt",
+            "Periodically trims Roblox memory to lower RAM use. May cause crashes, use with caution.",
+        )
+        self._sett_boost_ram_chk = self._settings_checkbox(
+            "optimize_roblox_ram", "Boost Roblox RAM Limit (May Cause Crash)",
+            "Periodically trim Roblox working-set memory to reduce RAM usage.\n"
+            "May causes crash when using this feature, use with caution.",
+            on_change=self._on_sett_boost_ram,
+        )
+        f.addWidget(self._sett_boost_ram_chk)
+        ram_row = QHBoxLayout()
+        ram_row.setContentsMargins(26, 0, 0, 0)
+        ram_lbl = QLabel("Low RAM Limit (MB)")
+        ram_lbl.setStyleSheet(f"color: {MUTED}; font-size: 12px; background: transparent;")
+        ram_lbl.setToolTip(
+            "Target memory limit per Roblox process in megabytes.\n"
+            "Processes using more than this will have their working set trimmed."
+        )
+        ram_row.addWidget(ram_lbl)
+        ram_row.addStretch(1)
+        self._sett_ram_spin = QSpinBox()
+        self._sett_ram_spin.setRange(100, 8192)
+        self._sett_ram_spin.setValue(int(S.get("optimize_roblox_ram_limit_mb", 750)))
+        self._sett_ram_spin.setSuffix(" MB")
+        self._sett_ram_spin.setFixedWidth(110)
+        self._sett_ram_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sett_ram_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self._sett_ram_spin.setEnabled(bool(S.get("optimize_roblox_ram", False)))
+        self._sett_ram_spin.valueChanged.connect(
+            lambda v: actions.save_ui_setting("optimize_roblox_ram_limit_mb", v)
+        )
+        ram_row.addWidget(self._sett_ram_spin)
+        f.addLayout(ram_row)
 
         f = self._sheet_group(
             body, "Apply", "enter",

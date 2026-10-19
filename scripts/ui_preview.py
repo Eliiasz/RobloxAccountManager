@@ -84,6 +84,12 @@ def main(out_dir: str) -> int:
             wait(app, 600)
             sheet = window._settings_sheets[kind]
             sheet.grab().save(str(out / f"{kind}.png"))
+            from PySide6.QtWidgets import QScrollArea
+            scroll = sheet.findChild(QScrollArea)
+            if scroll is not None and scroll.verticalScrollBar().maximum() > 0:
+                scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+                wait(app, 200)
+                sheet.grab().save(str(out / f"{kind}_bottom.png"))
             sheet.hide()
 
         window.resize(ui.MIN_WINDOW_SIZE)
