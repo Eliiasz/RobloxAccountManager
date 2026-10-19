@@ -85,6 +85,7 @@ def validate_build_files() -> None:
         SOURCE_ROOT / "main.py",
         ASSETS_ROOT / "icon.ico",
         ASSETS_ROOT / "discordlogo.png",
+        ASSETS_ROOT / "logo.png",
         SPEC_PATH,
         VERSION_MODULE_PATH,
     )

@@ -178,3 +178,26 @@ def start_load(query, session_id, page_token, on_done, on_thumbnail) -> threadin
 
     threading.Thread(target=work, name="game-search", daemon=True).start()
     return cancel
+
+
+PLACE_UNIVERSE_URL = "https://apis.roblox.com/universes/v1/places/{place_id}/universe"
+
+
+def fetch_place_icon(place_id, cancel: threading.Event | None = None) -> bytes | None:
+    """Icon image (PNG bytes) of the game a Place ID belongs to, or None."""
+    place = _id(str(place_id).strip())
+    if not place:
+        return None
+    cancel = cancel or threading.Event()
+    try:
+        universe = _id(_get_json(PLACE_UNIVERSE_URL.format(place_id=place), {}).get("universeId"))
+        if not universe or cancel.is_set():
+            return None
+        thumbnails = _get_json(THUMBNAILS_URL, {
+            "universeIds": universe, "size": "150x150", "format": "Png", "isCircular": "false",
+        })
+        url = next((entry.get("imageUrl") or "" for entry in thumbnails.get("data", [])
+                    if entry.get("state") == "Completed"), "")
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return None
+    return download_thumbnail(url, cancel) if url else None

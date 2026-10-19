@@ -30,6 +30,17 @@ from utils.version import APP_VERSION
 
 diagnostics.install(APP_VERSION)
 
+# 2.9.0 redesign: move everyone to the ANAne Orange theme and the new default
+# window size once. Later theme choices in Settings are kept.
+try:
+    if not settings_store.get("anane_theme_applied"):
+        settings_store.save("color_theme", "default")
+        settings_store.save("accent_color", "")
+        settings_store.remove("main_window_size")
+        settings_store.save("anane_theme_applied", True)
+except Exception as _exc:
+    print(f"[WARNING] Could not apply the new theme: {_exc}")
+
 from utils import splash
 
 splash.show(

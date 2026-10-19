@@ -30,6 +30,10 @@ class ResizeWindow(ui.AccountManagerUIQt):
         QMainWindow.closeEvent(self, event)
 
 
+MIN = ui.MIN_WINDOW_SIZE
+W, H = MIN.width(), MIN.height()
+
+
 class WindowResizeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -47,35 +51,41 @@ class WindowResizeTests(unittest.TestCase):
         self.addCleanup(window.close)
         return window
 
-    def test_original_size_is_the_minimum_and_expansion_is_allowed(self):
+    def test_first_start_uses_the_default_size_and_the_minimum_holds(self):
         window = self.window()
-        self.assertEqual(window.size(), QSize(640, 520))
+        self.assertEqual(window.size(), window._default_window_size())
+        self.assertGreaterEqual(window.width(), W)
+        self.assertGreaterEqual(window.height(), H)
         window.resize(300, 200)
-        self.assertEqual(window.size(), QSize(640, 520))
-        window.resize(740, 620)
-        self.assertEqual(window.size(), QSize(740, 620))
+        self.assertEqual(window.size(), MIN)
+        window.resize(W + 100, H + 100)
+        self.assertEqual(window.size(), QSize(W + 100, H + 100))
 
     def test_close_flushes_resize_and_the_next_window_restores_it(self):
         window = self.window()
-        window.resize(700, 600)
+        window.resize(W + 60, H + 80)
         window.close()
-        self.assertEqual(settings_store.get("main_window_size"), [700, 600])
-        self.assertEqual(self.window().size(), QSize(700, 600))
+        self.assertEqual(settings_store.get("main_window_size"), [W + 60, H + 80])
+        self.assertEqual(self.window().size(), QSize(W + 60, H + 80))
 
     def test_bad_or_too_small_saved_sizes_cannot_break_startup(self):
-        for value in (None, {}, [True, 600], ["700", 600], [700], [-1, 600], [320, 200]):
+        for value in (None, {}, [True, 600], ["700", 600], [700], [-1, 600]):
             with self.subTest(value=value):
                 settings_store.save("main_window_size", value)
-                self.assertEqual(self.window().size(), QSize(640, 520))
+                window = self.window()
+                self.assertEqual(window.size(), window._default_window_size())
+        settings_store.save("main_window_size", [320, 200])
+        self.assertEqual(self.window().size(), MIN)
 
     def test_saved_size_fits_the_display_even_for_huge_json_integers(self):
         settings_store.save("main_window_size", [10**100, 10**100])
         window = self.window()
-        available = window.screen().availableGeometry().size().expandedTo(QSize(640, 520))
+        available = window.screen().availableGeometry().size().expandedTo(MIN)
         self.assertEqual(window.size(), available)
 
     def test_dragging_the_grip_resizes_and_cannot_go_below_minimum(self):
         window = self.window()
+        window.resize(MIN)
         window.move(0, 0)
         window.show()
         self.app.processEvents()
@@ -89,7 +99,7 @@ class WindowResizeTests(unittest.TestCase):
                             Qt.KeyboardModifier.NoModifier)
         QApplication.sendEvent(grip, event)
         QTest.mouseRelease(grip, Qt.MouseButton.LeftButton, pos=local)
-        self.assertEqual(window.size(), QSize(700, 580))
+        self.assertEqual(window.size(), QSize(W + 60, H + 60))
 
         QTest.mousePress(grip, Qt.MouseButton.LeftButton, pos=local)
         initial = grip.mapToGlobal(local)
@@ -98,10 +108,11 @@ class WindowResizeTests(unittest.TestCase):
                             Qt.KeyboardModifier.NoModifier)
         QApplication.sendEvent(grip, event)
         QTest.mouseRelease(grip, Qt.MouseButton.LeftButton, pos=local)
-        self.assertEqual(window.size(), QSize(640, 520))
+        self.assertEqual(window.size(), MIN)
 
     def test_keyboard_resize_and_debounced_save(self):
         window = self.window()
+        window.resize(MIN)
         window.show()
         self.app.processEvents()
         window.grip.setFocus()
@@ -110,15 +121,15 @@ class WindowResizeTests(unittest.TestCase):
                 QTest.keyClick(window.grip, Qt.Key.Key_Right)
             save.assert_not_called()
             QTest.qWait(500)
-            save.assert_called_once_with("main_window_size", [670, 520])
+            save.assert_called_once_with("main_window_size", [W + 30, H])
 
     def test_maximizing_does_not_replace_the_saved_normal_size(self):
         window = self.window()
-        window.resize(700, 600)
+        window.resize(W + 60, H + 80)
         window.showMaximized()
         self.app.processEvents()
         window._save_window_size()
-        self.assertEqual(settings_store.get("main_window_size"), [700, 600])
+        self.assertEqual(settings_store.get("main_window_size"), [W + 60, H + 80])
 
     def test_main_layout_keeps_the_handle_clear_and_expands_the_account_list(self):
         manager = MagicMock()
@@ -132,18 +143,21 @@ class WindowResizeTests(unittest.TestCase):
             window = ui.AccountManagerUIQt(manager)
             self.addCleanup(window.deleteLater)
             self.addCleanup(window.close)
+            window.resize(MIN)
             window.show()
             self.app.processEvents()
-            self.assertEqual(window.size(), QSize(640, 520))
+            self.assertEqual(window.size(), MIN)
             before = window._account_list.size()
-            window.resize(1000, 760)
+            window.resize(W + 300, H + 200)
             self.app.processEvents()
             self.assertGreater(window._account_list.width(), before.width())
             self.assertGreater(window._account_list.height(), before.height())
             grip = window._resize_handle
             self.assertEqual(grip.mapTo(window, grip.rect().bottomRight()), window.rect().bottomRight())
-            self.assertEqual(window._page_stack.mapTo(window, window._page_stack.rect().bottomRight()).y(),
-                             window.rect().bottom())
+            # The cards keep an even margin from the bottom edge.
+            gap = window.rect().bottom() - window._page_stack.mapTo(
+                window, window._page_stack.rect().bottomRight()).y()
+            self.assertEqual(gap, 14)
             hit_area = grip.mask().translated(grip.mapTo(window, QPoint()))
             for button in window.centralWidget().findChildren(QPushButton):
                 if button.isVisible():

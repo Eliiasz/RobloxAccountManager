@@ -13,8 +13,14 @@ LEGACY_DEFAULTS = {
 
 
 class ResolveColorsTests(unittest.TestCase):
-    def test_default_theme_matches_the_colours_the_app_always_used(self):
+    def test_default_theme_is_the_anane_orange_theme(self):
         colors = ct.resolve_colors({})
+        self.assertEqual(colors["ACCENT"], "#FF7A1A")
+        self.assertEqual(colors["BG"], "#0A0D13")
+        self.assertEqual(ct.PRESETS["default"]["label"], "ANAne Orange")
+
+    def test_classic_theme_matches_the_colours_the_app_used_before(self):
+        colors = ct.resolve_colors({"color_theme": "classic"})
         for key, value in LEGACY_DEFAULTS.items():
             with self.subTest(key=key):
                 self.assertEqual(colors[key], value)
@@ -42,11 +48,11 @@ class ResolveColorsTests(unittest.TestCase):
 
     def test_choices_start_with_the_default_and_have_labels(self):
         choices = ct.theme_choices()
-        self.assertEqual(choices[0], ("default", "Default"))
+        self.assertEqual(choices[0], ("default", "ANAne Orange"))
         self.assertTrue(all(label for _, label in choices))
 
     def test_custom_accent_replaces_the_accent_and_its_variants(self):
-        colors = ct.resolve_colors({"color_theme": "default", "accent_color": "#e5557f"})
+        colors = ct.resolve_colors({"color_theme": "classic", "accent_color": "#e5557f"})
         self.assertEqual(colors["ACCENT"], "#E5557F")
         for key in ct.DERIVED_ACCENT:
             with self.subTest(key=key):

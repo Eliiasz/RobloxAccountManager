@@ -271,15 +271,18 @@ class FieldIntegrationTests(unittest.TestCase):
         button = window._games_selector_btn
         self.assertEqual(button.accessibleName(), "Open Games Selector")
         self.assertFalse(button.icon().isNull())
-        self.assertEqual(button.width(), 18)
-        self.assertEqual(button.iconSize().width(), 14)
-        self.assertEqual(button.mapTo(window, button.rect().topRight()).x(),
-                         window._place_id_edit.mapTo(window, window._place_id_edit.rect().topRight()).x())
+        self.assertEqual(button.width(), 22)
+        self.assertEqual(button.iconSize().width(), 16)
+        # The button sits inside the right end of the Place ID field.
+        combo = window._place_id_edit
+        self.assertIs(button.parentWidget(), combo)
+        self.assertTrue(combo.rect().contains(button.geometry()))
+        self.assertGreater(button.geometry().left(), combo.width() // 2)
         for mode, color in ((QIcon.Mode.Normal, ui.MUTED), (QIcon.Mode.Active, ui.MUTED)):
-            image = button.icon().pixmap(14, 14, mode).toImage()
+            image = button.icon().pixmap(16, 16, mode).toImage()
             pixels = [image.pixelColor(x, y) for y in range(image.height()) for x in range(image.width())]
             self.assertTrue(any(pixel.alpha() > 0 and pixel.name() == QColor(color).name() for pixel in pixels))
-        self.assertEqual(window.minimumSize().width(), 640)
+        self.assertEqual(window.minimumSize(), ui.MIN_WINDOW_SIZE)
         labels = [label for label in window.findChildren(ui.QLabel) if label.text() == "Place ID"]
         label = next(label for label in labels if label.isVisible())
         self.assertGreater(button.mapTo(window, button.rect().topLeft()).x(),

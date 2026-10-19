@@ -62,7 +62,7 @@ class ThemeControlsTests(unittest.TestCase):
         with patch.object(ui, "_THEME", color_themes.resolve_colors({})):
             self.window._refresh_color_theme_controls()
         self.assertEqual(self.window._color_theme_hint.text(), "Color themes are applied when the application starts.")
-        self.assertEqual(self.window._accent_button.text(), "#0078D7")
+        self.assertEqual(self.window._accent_button.text(), "#FF7A1A")
         self.assertFalse(self.window._accent_reset_button.isEnabled())
 
     def test_choosing_a_theme_saves_it_and_asks_for_a_restart(self):
@@ -91,7 +91,7 @@ class ThemeControlsTests(unittest.TestCase):
             self.assertEqual(self.window._accent_button.text(), "#FFD400")
             self.window._reset_accent_color()
         self.assertEqual(self.saved["accent_color"], "")
-        self.assertEqual(self.window._accent_button.text(), "#0078D7")
+        self.assertEqual(self.window._accent_button.text(), "#FF7A1A")
         self.assertFalse(self.window._accent_reset_button.isEnabled())
 
 

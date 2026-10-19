@@ -1,0 +1,52 @@
+name: UI Preview
+
+# Renders screenshots of the interface on Windows so layout changes can be
+# checked without running the app by hand. Download them from the run's
+# artifacts.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/utils/ui.py"
+      - "src/utils/icons.py"
+      - "src/utils/motion.py"
+      - "src/features/color_themes.py"
+      - "scripts/ui_preview.py"
+      - ".github/workflows/ui-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install 3.15
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Render screenshots
+        run: uv run --no-sync python scripts/ui_preview.py ui-preview
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-preview
+          path: ui-preview/*.png
+          if-no-files-found: error
+          retention-days: 14

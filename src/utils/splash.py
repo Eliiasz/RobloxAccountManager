@@ -108,12 +108,15 @@ class StartupSplash(QWidget):
         if self._icon is not None:
             self._icon.paint(painter, left, 34, 44, 44)
             left += 58
+        painter.setPen(QColor(c["ACCENT_TEXT"]))
+        painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        painter.drawText(left, 44, "ANAne's")
         painter.setPen(QColor(c["TEXT"]))
         painter.setFont(QFont("Segoe UI", 15, QFont.Weight.DemiBold))
-        painter.drawText(left, 55, "Roblox Account Manager")
+        painter.drawText(left, 66, "Roblox Account Manager")
         painter.setPen(QColor(c["MUTED"]))
         painter.setFont(QFont("Segoe UI", 9))
-        painter.drawText(left, 75, f"Version {self.version}")
+        painter.drawText(left, 86, f"Version {self.version}")
 
         painter.setPen(QColor(c["MUTED"]))
         painter.setFont(QFont("Segoe UI", 9))

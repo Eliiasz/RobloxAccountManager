@@ -34,6 +34,24 @@ PATHS: dict[str, str] = {
     "search": '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M16 16l5 5"/>',
     "chat": '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 10h8M8 13h5"/>',
     "ban": '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>',
+    "bolt": '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
+    "keyboard": (
+        '<rect x="3" y="6" width="18" height="12" rx="2"/>'
+        '<path d="M7 10h.01M11 10h.01M15 10h.01M17 10h.01M7 14h10"/>'
+    ),
+    "gauge": '<path d="M4.5 17a8.5 8.5 0 1 1 15 0"/><path d="M12 13l4-4"/><circle cx="12" cy="13" r="1"/>',
+    "dots": '<circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/>',
+    "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M4 7l8 6 8-6"/>',
+    "shield_check": '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
+    "chevron_right": '<path d="M10 6l6 6-6 6"/>',
+    "minimize": '<path d="M6 12h12"/>',
+    "maximize": '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+    "restore": '<rect x="5" y="8" width="11" height="11" rx="1.5"/><path d="M8 8V5h11v11h-3"/>',
+    "close": '<path d="M7 7l10 10M17 7L7 17"/>',
+    "gamepad": (
+        '<path d="M7 8h10a4 4 0 0 1 4 4v1a3 3 0 0 1-5.4 1.8L14.5 14h-5l-1.1.8A3 3 0 0 1 3 13v-1a4 4 0 0 1 4-4z"/>'
+        '<path d="M8 10.5v3M6.5 12h3M15.5 11h.01M17 13h.01"/>'
+    ),
     "globe": (
         '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/>'
         '<path d="M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9s1.3-6.4 3.8-9z"/>'
@@ -88,6 +106,18 @@ def make_icon(
     icon.addPixmap(pixmap(name, checked or active or normal, size), QIcon.Mode.Active, QIcon.State.On)
     icon.addPixmap(pixmap(name, disabled or normal, size), QIcon.Mode.Disabled, QIcon.State.Off)
     return icon
+
+
+def set_accent_icon(button, name: str, colors: dict[str, str], size: int = ICON_SIZE) -> None:
+    """Icon drawn in the accent color in every state (the orange icons of the redesign)."""
+    button.setIcon(make_icon(
+        name,
+        normal=colors["ACCENT_BRIGHT"],
+        active=colors["ACCENT_HOVER"],
+        disabled=colors["LINE"],
+        size=size,
+    ))
+    button.setIconSize(QSize(size, size))
 
 
 def set_button_icon(button, name: str, colors: dict[str, str], size: int = ICON_SIZE) -> None:

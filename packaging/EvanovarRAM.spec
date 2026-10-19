@@ -20,6 +20,7 @@ if not VERSION_INFO_PATH.is_file():
 datas = [
     (str(ASSETS_ROOT / "icon.ico"), "assets"),
     (str(ASSETS_ROOT / "discordlogo.png"), "assets"),
+    (str(ASSETS_ROOT / "logo.png"), "assets"),
 ]
 # Explicit inputs take precedence over native dependencies discovered on PATH.
 binaries = [

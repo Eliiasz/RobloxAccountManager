@@ -26,7 +26,19 @@ _HEX = re.compile(r"#[0-9a-fA-F]{6}")
 
 PRESETS: dict[str, dict] = {
     "default": {
-        "label": "Default",
+        "label": "ANAne Orange",
+        "BG": "#0A0D13", "PANEL": "#10141C", "INPUT": "#151A24",
+        "TEXT": "#ECEFF4", "MUTED": "#98A2B3", "LINE": "#232A37",
+        "SELECT": "#1B2130", "NOTE": "#F5A524", "ACCENT": "#FF7A1A",
+        "explicit": {
+            "HOVER": "#262E3D", "PRESSED": "#11151D", "RAISED": "#1D2433",
+            "ACCENT_HOVER": "#FF8D3B", "ACCENT_PRESSED": "#E2620B",
+            "ACCENT_BRIGHT": "#FF8A2A", "ACCENT_SOFT": "#3A2312",
+            "ACCENT_TEXT": "#FF9A4A", "ACCENT_DEEP": "#1E140D",
+        },
+    },
+    "classic": {
+        "label": "Classic Blue",
         "BG": "#0E0E0E", "PANEL": "#151515", "INPUT": "#1A1A1A",
         "TEXT": "#EDEDED", "MUTED": "#AAAAAA", "LINE": "#242424",
         "SELECT": "#2A2A2A", "NOTE": "#D6BB7D", "ACCENT": "#0078D7",

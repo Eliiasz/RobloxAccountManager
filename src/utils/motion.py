@@ -168,3 +168,43 @@ def fade_in(widget: QWidget, duration: int = FADE_MS, enabled: bool = True) -> Q
     animation.finished.connect(finish)
     animation.start(QVariantAnimation.DeletionPolicy.DeleteWhenStopped)
     return animation
+
+
+SLIDE_MS = 220
+SLIDE_OFFSET = 14
+
+
+def slide_fade_in(
+    widget: QWidget,
+    offset: int = SLIDE_OFFSET,
+    duration: int = SLIDE_MS,
+    enabled: bool = True,
+) -> QVariantAnimation | None:
+    """Fade a page in while it glides up into place (used when switching pages)."""
+    if not enabled or widget is None or not widget.isVisible():
+        return None
+    home = widget.pos()
+    effect = QGraphicsOpacityEffect(widget)
+    effect.setOpacity(0.0)
+    widget.setGraphicsEffect(effect)
+    widget.move(home.x(), home.y() + offset)
+    animation = QVariantAnimation(widget)
+    animation.setDuration(duration)
+    animation.setStartValue(0.0)
+    animation.setEndValue(1.0)
+    animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def step(value) -> None:
+        progress = float(value)
+        effect.setOpacity(progress)
+        widget.move(home.x(), home.y() + round(offset * (1.0 - progress)))
+
+    def finish() -> None:
+        widget.move(home)
+        if widget.graphicsEffect() is effect:
+            widget.setGraphicsEffect(None)
+
+    animation.valueChanged.connect(step)
+    animation.finished.connect(finish)
+    animation.start(QVariantAnimation.DeletionPolicy.DeleteWhenStopped)
+    return animation
