@@ -71,6 +71,13 @@ def main(out_dir: str) -> int:
         window._show_page(4)
         wait(app, 600)
         window.grab().save(str(out / "settings.png"))
+        spin = window._sett_launch_delay_spin
+        editor = spin.lineEdit()
+        print("spin text:", repr(spin.text()), "size:", spin.size().toTuple(),
+              "editor geo:", editor.geometry().getRect(), "editor text:", repr(editor.text()),
+              "editor visible:", editor.isVisible(),
+              "text color:", editor.palette().color(editor.foregroundRole()).name())
+        spin.grab().scaled(spin.width() * 3, spin.height() * 3).save(str(out / "spin.png"))
         window._show_page(0)
         wait(app, 400)
 
