@@ -95,6 +95,21 @@ jobs:
           )
         shell: cmd
 
+      - name: Small update patch from the previous release
+        # Users on the previous version download only this patch; anyone else
+        # (or if anything fails) gets the full exe, so this step never blocks a release.
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh api "repos/${{ github.repository }}/releases/latest" -q .tag_name)
+          echo "Previous release: $prev"
+          if [ -z "$prev" ] || [ "$prev" = "$RELEASE_TAG" ]; then exit 0; fi
+          mkdir -p prev
+          gh release download "$prev" --repo "${{ github.repository }}" -p "ANaneRAM-$prev.exe" -D prev
+          uv run --no-sync python scripts/make_patch.py "prev/ANaneRAM-$prev.exe" "dist/ANaneRAM-$RELEASE_TAG.exe" "dist/ANaneRAM-$RELEASE_TAG-from-$prev.patch"
+
       - name: Release notes
         id: notes
         shell: bash
@@ -116,3 +131,10 @@ jobs:
           files: |
             dist/ANaneRAM-v*.exe
             dist/EvanovarRAM-v*.exe
+
+      - name: Attach the update patch
+        if: ${{ hashFiles('dist/*.patch') != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" dist/*.patch --repo "${{ github.repository }}"

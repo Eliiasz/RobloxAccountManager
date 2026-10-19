@@ -22,7 +22,9 @@ import requests
 import win32api
 
 from classes.operation_result import OperationResult
+import features.delta_patch as delta_patch
 from utils.app_paths import get_data_dir
+from utils.version import APP_VERSION
 
 GITHUB_API = "https://api.github.com/repos/Eliiasz/RobloxAccountManager/releases/latest"
 RELEASES_PAGE = "https://github.com/Eliiasz/RobloxAccountManager/releases/latest"
@@ -151,6 +153,22 @@ def _select_asset(release: dict) -> dict | None:
     return selected
 
 
+def _select_patch(release: dict, current_version: str = APP_VERSION) -> dict | None:
+    """The small patch that turns this version's exe into the release's exe, if published."""
+    tag = str(release.get("tag_name", "")).strip()
+    if not tag:
+        return None
+    wanted = delta_patch.patch_asset_name(tag, current_version).lower()
+    for asset in release.get("assets", []):
+        if str(asset.get("name", "")).lower() == wanted and asset.get("browser_download_url"):
+            return {
+                "url": asset["browser_download_url"],
+                "name": asset["name"],
+                "size": asset.get("size"),
+            }
+    return None
+
+
 def get_exe_asset() -> dict | None:
     try:
         response = requests.get(GITHUB_API, timeout=8)
@@ -164,6 +182,7 @@ def get_exe_asset() -> dict | None:
             "name": selected["name"],
             "size": selected.get("size"),
             "digest": selected.get("digest"),
+            "patch": _select_patch(release),
         }
     except Exception as exc:
         print(f"[ERROR] get_exe_download_url error: {exc}")
@@ -425,6 +444,55 @@ def _launch_installer(
     )
 
 
+def _download_file(url: str, path: str, on_progress: Callable[[int], None], start: int, end: int) -> int:
+    if not is_trusted_download_url(url):
+        raise RuntimeError(f"The update download address is not a {DOWNLOAD_HOST} HTTPS link.")
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    total = int(response.headers.get("content-length", 0))
+    downloaded = 0
+    with open(path, "wb") as handle:
+        for chunk in response.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            handle.write(chunk)
+            downloaded += len(chunk)
+            if total > 0:
+                on_progress(int(start + (downloaded / total) * (end - start)))
+    if total > 0 and not response.headers.get("content-encoding") and downloaded != total:
+        raise RuntimeError("The update download was interrupted before it finished.")
+    return downloaded
+
+
+def _try_patch_update(asset: dict, target: str, source_path: str, update_directory: str,
+                      on_progress: Callable[[int], None]) -> bool:
+    """Build the new exe from this one plus a small patch. False means: use the full download."""
+    patch = asset.get("patch")
+    digest = str(asset.get("digest") or "")
+    if not patch or not digest.lower().startswith("sha256:"):
+        return False  # without the release checksum a patched file can't be trusted
+    patch_path = os.path.join(update_directory, "update.patch")
+    try:
+        print(f"[INFO] Downloading the small update patch {patch['name']} "
+              f"({(patch.get('size') or 0) / 1024 / 1024:.1f} MB) instead of the full app")
+        _download_file(patch["url"], patch_path, on_progress, 2, 60)
+        on_progress(65)
+        delta_patch.apply_patch_file(target, patch_path, source_path)
+        on_progress(90)
+        verify_download(source_path, asset.get("size"), digest)
+        print("[SUCCESS] Patch applied and verified against the release checksum")
+        return True
+    except Exception as exc:
+        print(f"[WARNING] The patch update could not be used ({type(exc).__name__}: {exc}). "
+              "Downloading the full app instead.")
+        for leftover in (source_path, source_path + ".part"):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+        return False
+
+
 def download_update(
     on_progress: Callable[[int], None],
     on_done: Callable[[bool, str], None],
@@ -451,29 +519,15 @@ def download_update(
             url, filename = asset["url"], asset["name"]
             if not is_trusted_download_url(url):
                 raise RuntimeError(f"The update download address is not a {DOWNLOAD_HOST} HTTPS link.")
-            print(f"[INFO] Downloading {filename} from {url}")
             on_progress(2)
 
             update_directory = tempfile.mkdtemp(prefix="evanovar_ram_update_")
             source_path = os.path.join(update_directory, "update.exe")
 
-            response = requests.get(url, stream=True, timeout=60)
-            response.raise_for_status()
-            total = int(response.headers.get("content-length", 0))
-            downloaded = 0
-
-            with open(source_path, "wb") as handle:
-                for chunk in response.iter_content(chunk_size=65536):
-                    if not chunk:
-                        continue
-                    handle.write(chunk)
-                    downloaded += len(chunk)
-                    if total > 0:
-                        on_progress(int(2 + (downloaded / total) * 95))
-
-            if total > 0 and not response.headers.get("content-encoding") and downloaded != total:
-                raise RuntimeError("The update download was interrupted before it finished.")
-            verify_download(source_path, asset.get("size"), asset.get("digest"))
+            if not _try_patch_update(asset, target, source_path, update_directory, on_progress):
+                print(f"[INFO] Downloading {filename} from {url}")
+                _download_file(url, source_path, on_progress, 2, 97)
+                verify_download(source_path, asset.get("size"), asset.get("digest"))
 
             digest = str(asset.get("digest") or "")
             expected_sha256 = digest.partition(":")[2].upper() if digest.lower().startswith("sha256:") else ""

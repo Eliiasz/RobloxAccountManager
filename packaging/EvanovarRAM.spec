@@ -29,6 +29,7 @@ binaries = [
     (str(WINDOWS_ICU_PATH), "."),
 ]
 hiddenimports = [
+    "compression.zstd",
     "requests",
     "Crypto",
     "win32event",
