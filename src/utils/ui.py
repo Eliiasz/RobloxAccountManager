@@ -4654,9 +4654,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
         self._queue_polling = True
 
+        manager = getattr(self, "manager", None)
+
         def _worker():
             try:
-                count = len(actions.presence_mod.get_roblox_processes(max_age=1.0))
+                pids = set(actions.presence_mod.get_roblox_processes(max_age=1.0))
+                if pids and manager is not None:
+                    pids -= actions.locked_roblox_pids(manager)  # locked windows stay open
+                count = len(pids)
             except Exception:
                 count = -1
             self._bridge.queue_poll_done.emit(count)
@@ -8924,6 +8929,42 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         join_row.addWidget(join_btn, 1)
         join_row.addWidget(self._join_arrow)
         lay.addLayout(join_row)
+        lay.addSpacing(4)
+
+        # Join User: follow a player into the server they are in right now
+        target_lbl = QLabel("Join User")
+        target_lbl.setObjectName("fieldLabel")
+        target_lbl.setToolTip(
+            "Join the server a player is in right now. Works without being friends\n"
+            "when their Roblox privacy \"Who can join me?\" is set to Everyone."
+        )
+        lay.addWidget(target_lbl)
+        target_row = QHBoxLayout()
+        target_row.setSpacing(10)
+        self._join_target_edit = QComboBox()
+        self._join_target_edit.setObjectName("bigField")
+        self._join_target_edit.setEditable(True)
+        self._join_target_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._join_target_edit.lineEdit().setPlaceholderText("Target username")
+        self._join_target_edit.lineEdit().setClearButtonEnabled(True)
+        self._join_target_edit.setToolTip(target_lbl.toolTip())
+        for name in self._recent_join_targets():
+            self._join_target_edit.addItem(name)
+        self._join_target_edit.setCurrentText(str(actions.get_ui_setting("last_join_target", "") or ""))
+        self._join_target_edit.lineEdit().returnPressed.connect(self._on_join_target)
+        target_row.addWidget(self._join_target_edit, 1)
+        self._join_target_btn = QPushButton()
+        self._join_target_btn.setObjectName("joinUserButton")
+        self._join_target_btn.setToolTip("Join this user's server with the selected accounts")
+        self._join_target_btn.setAccessibleName("Join user")
+        self._join_target_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._join_target_btn.setIcon(icons.make_icon("user_join", PRIMARY_TEXT, size=22))
+        self._join_target_btn.setIconSize(QSize(22, 22))
+        self._join_target_btn.setFixedSize(44, 42)
+        self._join_target_btn.setStyleSheet(PRIMARY_BUTTON_QSS.replace("min-height: 42px; padding: 0 14px;", "min-height: 0; padding: 0;"))
+        self._join_target_btn.clicked.connect(self._on_join_target)
+        target_row.addWidget(self._join_target_btn)
+        lay.addLayout(target_row)
 
         # Recent games card
         recent_card = QFrame()
@@ -8965,17 +9006,21 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             setattr(self, f"_{kind}_sheet_btn", btn)
         recent_lay.addLayout(sheet_row)
 
-        # Quick action buttons
-        for label, slot, icon_name in [
-            ("Refresh List",        self._refresh_account_list, "refresh"),
-            ("Launch Roblox Home",  self._on_launch_home, "home"),
+        # Quick action buttons, side by side like Hotkey and Performance
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(10)
+        for label, slot, icon_name, tip in [
+            ("Refresh List", self._refresh_account_list, "refresh", "Reload the account list"),
+            ("Roblox Home", self._on_launch_home, "home", "Launch Roblox Home with the selected accounts"),
         ]:
-            btn = QPushButton(f"    {label}")
-            btn.setObjectName("tile")
+            btn = QPushButton(f" {label}")
+            btn.setObjectName("tileSmall")
+            btn.setToolTip(tip)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            icons.set_accent_icon(btn, icon_name, _THEME, size=22)
+            icons.set_accent_icon(btn, icon_name, _THEME, size=20)
             btn.clicked.connect(slot)
-            recent_lay.addWidget(btn)
+            quick_row.addWidget(btn, 1)
+        recent_lay.addLayout(quick_row)
 
         return panel
 
@@ -9692,6 +9737,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
             row_lay.addLayout(text_col, 1)
 
+            if isinstance(data, dict) and data.get(actions.LOCK_KEY):
+                lock_lbl = QLabel()
+                lock_lbl.setPixmap(icons.pixmap("lock", ACCENT_BRIGHT, 18))
+                lock_lbl.setToolTip("Locked: Kill All Roblox keeps this account's Roblox open")
+                lock_lbl.setStyleSheet("background: transparent;")
+                row_lay.addWidget(lock_lbl)
+
             menu_btn = QToolButton()
             menu_btn.setObjectName("rowMenu")
             menu_btn.setIcon(icons.make_icon("dots", MUTED, active=TEXT, size=20))
@@ -10342,6 +10394,47 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 on_done=self._launch_callback(usernames),
             )
 
+    _RECENT_TARGETS_SETTING = "recent_join_targets"
+
+    def _recent_join_targets(self) -> list[str]:
+        value = actions.get_ui_setting(self._RECENT_TARGETS_SETTING, [])
+        return [str(v) for v in value if isinstance(v, str) and v.strip()][:10] if isinstance(value, list) else []
+
+    def _remember_join_target(self, name: str) -> None:
+        names = [name] + [n for n in self._recent_join_targets() if n.lower() != name.lower()]
+        actions.save_ui_setting(self._RECENT_TARGETS_SETTING, names[:10])
+        actions.save_ui_setting("last_join_target", name)
+        combo = getattr(self, "_join_target_edit", None)
+        if combo is not None and isValid(combo):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(names[:10])
+            combo.setCurrentText(name)
+            combo.blockSignals(False)
+
+    def _on_join_target(self):
+        target = self._join_target_edit.currentText().strip()
+        if not target:
+            _show_error(self, "Join User", "Type the username of the player you want to join.")
+            self._join_target_edit.setFocus()
+            return
+        usernames = self._get_selected_usernames()
+        if not usernames:
+            _show_error(self, "No selection", "Please select at least one account.")
+            return
+        if not self._guard_invalid(usernames):
+            return
+        if not self._confirm_launch(f"Join {target}", usernames):
+            return
+        self._remember_join_target(target)
+        print(f"[INFO] Joining {target}'s server with {len(usernames)} account(s)")
+        actions.join_user(
+            self.manager,
+            usernames,
+            target,
+            on_done=self._launch_callback(usernames),
+        )
+
     def _on_join_user(self):
         usernames = self._get_selected_usernames()
         if not usernames:
@@ -10470,8 +10563,17 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         btn.setEnabled(False)
         btn.setText("Killing...")
 
+        manager = self.manager
+
         def _worker():
-            result = actions.kill_all_roblox_fast()
+            try:
+                keep = actions.locked_roblox_pids(manager)
+            except Exception as exc:
+                print(f"[WARNING] Could not check locked accounts: {exc}")
+                keep = set()
+            if keep:
+                print(f"[INFO] Kill All Roblox: keeping {len(keep)} locked account window(s) open")
+            result = actions.kill_all_roblox_fast(keep_pids=keep)
             self._bridge.kill_roblox_done.emit(result)
 
         threading.Thread(target=_worker, daemon=True, name="KillAllRoblox").start()
@@ -10482,15 +10584,29 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if not isValid(btn):
             return
         if result:
-            games = (result.data or {}).get("games", 0) if hasattr(result, "data") else 0
-            btn.setText(f"Killed {games}" if games else "None running")
+            data = (result.data or {}) if hasattr(result, "data") else {}
+            games, kept = data.get("games", 0), data.get("kept", 0)
+            text = f"Killed {games}" if games else "None running"
+            if kept:
+                text = f"Killed {games} · {kept} locked"
+            btn.setText(text)
         else:
             btn.setText("Some left!")
             print(f"[WARNING] {result.message} {getattr(result, 'detail', '')}")
         btn.setEnabled(True)
-        QTimer.singleShot(1800, lambda: isValid(btn) and btn.setText("Kill All Roblox"))
+        QTimer.singleShot(1800, lambda: isValid(btn) and btn.setText("  Kill All Roblox"))
         if getattr(self, "_launch_queue", None):
             self._poll_queue()  # the queue sees the closed clients and moves on
+
+    def _set_accounts_locked(self, usernames: list[str], locked: bool) -> None:
+        try:
+            actions.set_accounts_locked(self.manager, usernames, locked)
+        except OSError as exc:
+            _show_error(self, "Lock Account", f"The change could not be saved:\n{exc}")
+            return
+        word = "Locked" if locked else "Unlocked"
+        print(f"[INFO] {word} {len(usernames)} account(s): {', '.join(usernames)}")
+        self._refresh_account_list()
 
     def _launch_callback(self, usernames: list[str]):
         batch = list(usernames)
@@ -10705,6 +10821,15 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         act_join = menu.addAction("Join Place ID")
         act_note = menu.addAction("Edit Note")
+        lock_targets = multi_sel if username in multi_sel else [username]
+        all_locked = all(
+            isinstance(self.manager.accounts.get(u), dict) and self.manager.accounts[u].get(actions.LOCK_KEY)
+            for u in lock_targets
+        )
+        lock_label = "Unlock" if all_locked else "Lock (Kill All keeps it open)"
+        if len(lock_targets) > 1:
+            lock_label += f" ({len(lock_targets)} accounts)"
+        act_lock = menu.addAction(icons.make_icon("unlock" if all_locked else "lock", ACCENT_BRIGHT, size=16), lock_label)
         menu.addSeparator()
 
         # Copy Contents submenu
@@ -10751,7 +10876,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         act_remove = menu.addAction("Remove Account")
 
         chosen = menu.exec(self._account_list.mapToGlobal(pos))
-        if chosen == act_join:
+        if chosen == act_lock:
+            self._set_accounts_locked(lock_targets, not all_locked)
+        elif chosen == act_join:
             self._on_join_place()
         elif chosen == act_note:
             self._on_edit_note()

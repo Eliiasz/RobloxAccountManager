@@ -549,19 +549,25 @@ def join_user(manager, usernames: list[str] | str, target_username: str, on_done
                 ))
                 return
 
-            first_acc_data = manager.accounts.get(usernames[0], {})
-            cookie = first_acc_data.get("cookie", "")
-            if not cookie:
-                msg = f"No cookie found for account {usernames[0]} to check presence."
+            # Ask with each selected account until one may see the target's
+            # server: Roblox only shares it with accounts allowed to join.
+            presence = None
+            checked_any = False
+            for account in usernames:
+                cookie = (manager.accounts.get(account, {}) or {}).get("cookie", "")
+                if not cookie:
+                    continue
+                checked_any = True
+                presence = RobloxAPI.get_player_presence(target_user_id, cookie)
+                if presence and presence.get("in_game") and presence.get("place_id"):
+                    break
+                if presence and not presence.get("in_game"):
+                    break  # offline / not in a game is the same for every account
+            if not checked_any:
+                msg = f"No cookie found for the selected accounts to check {target_username}."
                 print(f"[WARNING] join_user: {msg}")
-                on_done(False, OperationResult.failure(
-                    "COOKIE_MISSING",
-                    "Account Cookie Missing",
-                    msg,
-                ))
+                on_done(False, OperationResult.failure("COOKIE_MISSING", "Account Cookie Missing", msg))
                 return
-
-            presence = RobloxAPI.get_player_presence(target_user_id, cookie)
             if not presence:
                 msg = f"Could not fetch presence data for {target_username}."
                 print(f"[WARNING] join_user: {msg}")
@@ -574,7 +580,12 @@ def join_user(manager, usernames: list[str] | str, target_username: str, on_done
                 return
 
             if not presence.get("in_game", False):
-                msg = f"{target_username} is not in a game."
+                status = presence.get("status", 0)
+                if status == 0:
+                    msg = (f"{target_username} is offline, or their privacy hides whether they are online "
+                           f"from these accounts.")
+                else:
+                    msg = f"{target_username} is online but not in a game right now."
                 print(f"[WARNING] join_user: {msg}")
                 on_done(False, OperationResult.failure(
                     "TARGET_NOT_IN_GAME",
@@ -587,11 +598,13 @@ def join_user(manager, usernames: list[str] | str, target_username: str, on_done
             game_id  = str(presence.get("game_id",  "") or "")
 
             if not place_id:
-                msg = f"{target_username} is in a game, but their Place ID is hidden."
+                msg = (f"{target_username} is in a game, but their privacy doesn't let these accounts join them. "
+                       "Their Roblox setting \"Who can join me?\" must be Everyone, or the accounts must be "
+                       "their friends.")
                 print(f"[WARNING] join_user: {msg}")
                 on_done(False, OperationResult.failure(
                     "TARGET_PLACE_HIDDEN",
-                    "Place ID Is Hidden",
+                    "Can't Join This User",
                     msg,
                 ))
                 return
@@ -2265,18 +2278,84 @@ _KILL_PROCESS_NAMES = frozenset({
 })
 
 
-def kill_all_roblox_fast() -> OperationResult:
+LOCK_KEY = "locked"
+
+
+def locked_usernames(manager) -> set[str]:
+    accounts_lock = getattr(manager, "_accounts_lock", None)
+    if accounts_lock is not None:
+        with accounts_lock:
+            items = list(manager.accounts.items())
+    else:
+        items = list(manager.accounts.items())
+    return {name for name, data in items if isinstance(data, dict) and data.get(LOCK_KEY)}
+
+
+def set_accounts_locked(manager, usernames, locked: bool) -> int:
+    """Lock or unlock accounts (Kill All leaves locked accounts' Roblox open)."""
+    changed = 0
+    accounts_lock = getattr(manager, "_accounts_lock", None)
+    if accounts_lock is not None:
+        accounts_lock.acquire()
+    try:
+        for name in usernames:
+            data = manager.accounts.get(name)
+            if not isinstance(data, dict):
+                continue
+            if bool(data.get(LOCK_KEY)) != bool(locked):
+                changed += 1
+            if locked:
+                data[LOCK_KEY] = True
+            else:
+                data.pop(LOCK_KEY, None)
+        if changed:
+            manager.save_accounts()
+    finally:
+        if accounts_lock is not None:
+            accounts_lock.release()
+    return changed
+
+
+def locked_roblox_pids(manager) -> set[int]:
+    """PIDs of Roblox clients that belong to locked accounts.
+
+    Each client is matched to its account through Roblox's own log files (the
+    same way the RAM usage display works). Clients that cannot be matched are
+    not protected.
+    """
+    locked = locked_usernames(manager)
+    if not locked:
+        return set()
+    uid_to_name = presence_mod._build_uid_map(manager)
+    try:
+        processes = presence_mod.get_roblox_processes(force=True)
+    except Exception:
+        return set()
+    keep: set[int] = set()
+    used_logs: set[str] = set()
+    for pid, (_created, _process) in sorted(processes.items(), key=lambda item: item[1][0]):
+        user_id = presence_mod._get_user_id_from_pid(pid, used_logs)
+        if user_id and uid_to_name.get(str(user_id)) in locked:
+            keep.add(pid)
+    return keep
+
+
+def kill_all_roblox_fast(keep_pids: set[int] | None = None) -> OperationResult:
     """Terminate every Roblox player process at once.
 
     Uses TerminateProcess on all matches in one pass (no per-process
-    taskkill), waits briefly, then falls back to a single taskkill /IM for
-    anything that survived. Safe to call from a worker thread.
+    taskkill), waits briefly, then falls back to taskkill for anything that
+    survived. Processes in keep_pids (locked accounts) are left running.
+    Safe to call from a worker thread.
     """
+    keep_pids = set(keep_pids or ())
     started = time.monotonic()
     targets: list[psutil.Process] = []
     try:
         for process in psutil.process_iter(["pid", "name"]):
             try:
+                if process.pid in keep_pids:
+                    continue
                 if (process.info.get("name") or "").lower() in _KILL_PROCESS_NAMES:
                     targets.append(process)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -2287,7 +2366,7 @@ def kill_all_roblox_fast() -> OperationResult:
     games = sum(1 for p in targets if (p.info.get("name") or "").lower() == "robloxplayerbeta.exe")
     if not targets:
         return OperationResult.success(
-            "No Roblox running.", data={"closed": 0, "games": 0, "remaining": 0}
+            "No Roblox running.", data={"closed": 0, "games": 0, "remaining": 0, "kept": len(keep_pids)}
         )
 
     for process in targets:
@@ -2304,14 +2383,21 @@ def kill_all_roblox_fast() -> OperationResult:
         alive = [p for p in targets if p.is_running()]
 
     if alive:
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/IM", "RobloxPlayerBeta.exe"],
-                capture_output=True, timeout=8,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except Exception:
-            pass
+        # With locked accounts, only the survivors are force-closed by PID so
+        # the locked clients are never touched.
+        commands = (
+            [["taskkill", "/F", "/T", "/PID", str(p.pid)] for p in alive]
+            if keep_pids else [["taskkill", "/F", "/T", "/IM", "RobloxPlayerBeta.exe"]]
+        )
+        for command in commands:
+            try:
+                subprocess.run(
+                    command,
+                    capture_output=True, timeout=8,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:
+                pass
         alive = [p for p in alive if _still_running(p)]
 
     try:
@@ -2334,7 +2420,7 @@ def kill_all_roblox_fast() -> OperationResult:
         )
     return OperationResult.success(
         f"Closed {games} Roblox window(s).",
-        data={"closed": len(targets), "games": games, "remaining": 0},
+        data={"closed": len(targets), "games": games, "remaining": 0, "kept": len(keep_pids)},
     )
 
 
