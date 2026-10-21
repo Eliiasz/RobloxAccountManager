@@ -1138,6 +1138,9 @@ _AFK_WHEEL_DELTA = 120
 _AFK_XBUTTON1 = 0x0001
 _AFK_XBUTTON2 = 0x0002
 _AFK_RETRY_SECONDS = 15
+AFK_DELAY_SETTING = "anti_afk_window_delay"   # seconds between windows
+AFK_DELAY_DEFAULT = 1.0
+AFK_DELAY_MAX = 10.0
 
 
 class _AfkKeyboardInput(ctypes.Structure):
@@ -1422,28 +1425,93 @@ def _get_afk_window_states(pids: set[int]) -> list[dict]:
     return states
 
 
+def _restore_afk_window_state(state: dict, manager=None) -> None:
+    """Put one window back exactly as it was (minimized, hidden, size, position)."""
+    hwnd = state["hwnd"]
+    if not win32gui.IsWindow(hwnd):
+        return
+    placement = state.get("placement")
+    if placement:
+        try:
+            win32gui.SetWindowPlacement(hwnd, placement)
+        except Exception:
+            pass
+    if state.get("headless_hidden") and manager:
+        manager.resume_hidden(state["pid"])
+    elif not state.get("visible"):
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+        except Exception:
+            pass
+
+
 def _restore_afk_window_states(states: list[dict], original_hwnd: int) -> None:
     manager = headless_manager_mod.get_active_manager()
     for state in states:
-        hwnd = state["hwnd"]
-        if not win32gui.IsWindow(hwnd):
-            continue
-        placement = state.get("placement")
-        if placement:
-            try:
-                win32gui.SetWindowPlacement(hwnd, placement)
-            except Exception:
-                pass
-        if state.get("headless_hidden") and manager:
-            manager.resume_hidden(state["pid"])
-        elif not state.get("visible"):
-            try:
-                win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
-            except Exception:
-                pass
-
+        _restore_afk_window_state(state, manager)
     if original_hwnd and win32gui.IsWindow(original_hwnd):
         _focus_afk_window(original_hwnd)
+
+
+def _afk_window_rect(state: dict) -> tuple[int, int, int, int]:
+    """Where the window sits when not minimized (Windows keeps this for minimized windows too)."""
+    placement = state.get("placement")
+    try:
+        if placement and len(placement) >= 5:
+            left, top, right, bottom = placement[4]
+            return int(left), int(top), int(right), int(bottom)
+    except Exception:
+        pass
+    try:
+        return tuple(win32gui.GetWindowRect(state["hwnd"]))
+    except Exception:
+        return (0, 0, 0, 0)
+
+
+def _afk_grid_order(states: list[dict]) -> list[dict]:
+    """Top-left window first, then left to right, row by row (Window Grid order)."""
+    items = sorted(((_afk_window_rect(s), s) for s in states), key=lambda item: (item[0][1], item[0][0]))
+    rows: list[list[tuple]] = []
+    for rect, state in items:
+        height = max(1, rect[3] - rect[1])
+        tolerance = max(20, height // 2)
+        if rows and abs(rect[1] - rows[-1][0][0][1]) <= tolerance:
+            rows[-1].append((rect, state))
+        else:
+            rows.append([(rect, state)])
+    return [state for row in rows for _rect, state in sorted(row, key=lambda item: item[0][0])]
+
+
+def _afk_show_window(state: dict) -> None:
+    """Show a window at its own size: a minimized or hidden window comes back at its
+    normal size and position (never maximized); an open window is left as it is."""
+    hwnd = state["hwnd"]
+    placement = state.get("placement")
+    minimized = False
+    try:
+        minimized = bool(win32gui.IsIconic(hwnd))
+    except Exception:
+        pass
+    if (minimized or not state.get("visible")) and placement and len(placement) >= 5:
+        try:
+            flags, _show, min_pos, max_pos, normal = placement[:5]
+            win32gui.SetWindowPlacement(hwnd, (flags, win32con.SW_SHOWNORMAL, min_pos, max_pos, normal))
+            return
+        except Exception:
+            pass
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE if not minimized else win32con.SW_SHOWNORMAL)
+    except Exception:
+        pass
+
+
+def afk_window_delay() -> float:
+    try:
+        value = float(get_ui_setting(AFK_DELAY_SETTING, AFK_DELAY_DEFAULT))
+    except (TypeError, ValueError):
+        value = AFK_DELAY_DEFAULT
+    return max(0.0, min(AFK_DELAY_MAX, value))
+
 
 def set_afk_tooltip_callback(cb: Callable[[str | None, int, int], None]) -> None:
     global _afk_tooltip_callback
@@ -1491,6 +1559,47 @@ def trigger_anti_afk() -> bool:
     _afk_trigger_event.set()
     print("[Anti-AFK] Manual maintenance requested")
     return True
+
+
+def _afk_run_round(window_states: list[dict], manager, original_hwnd: int) -> int:
+    """One Anti-AFK round: strictly one window at a time, in grid order.
+
+    Each window is shown at its own size (never maximized), gets the key
+    press, and is put straight back (minimized again if it was) before the
+    next one; then the delay setting gives the PC a breather.
+    """
+    successful = 0
+    delay = afk_window_delay()
+    ordered = _afk_grid_order(window_states)
+    try:
+        for index, state in enumerate(ordered):
+            if _afk_stop_event.is_set():
+                break
+            pid = state["pid"]
+            hwnd = state["hwnd"]
+            if state["headless_hidden"] and manager:
+                manager.pause_hidden(pid)
+            try:
+                _afk_show_window(state)
+                if _afk_stop_event.wait(0.25):
+                    break
+                if not _focus_afk_window(hwnd):
+                    print(f"[Anti-AFK] Could not focus Roblox window 0x{hwnd:08X} for PID {pid}")
+                    continue
+                if not _perform_afk_action(_afk_key, _afk_press_count):
+                    print(f"[Anti-AFK] Input failed for Roblox window 0x{hwnd:08X} for PID {pid}")
+                    continue
+                successful += 1
+                print(f"[Anti-AFK] Action sent to Roblox window 0x{hwnd:08X} for PID {pid} "
+                      f"({index + 1}/{len(ordered)})")
+            finally:
+                _restore_afk_window_state(state, manager)
+            if delay and index < len(ordered) - 1 and _afk_stop_event.wait(delay):
+                break
+    finally:
+        if original_hwnd and win32gui.IsWindow(original_hwnd):
+            _focus_afk_window(original_hwnd)
+    return successful
 
 
 def _afk_worker():
@@ -1544,46 +1653,7 @@ def _afk_worker():
                 original_hwnd = 0
 
             manager = headless_manager_mod.get_active_manager()
-            successful_actions = 0
-            try:
-                for state in window_states:
-                    if _afk_stop_event.is_set():
-                        break
-
-                    pid = state["pid"]
-                    hwnd = state["hwnd"]
-                    if state["headless_hidden"] and manager:
-                        manager.pause_hidden(pid)
-
-                    try:
-                        win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
-                        win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
-                    except Exception:
-                        pass
-
-                    if _afk_stop_event.wait(0.25):
-                        break
-                    if not _focus_afk_window(hwnd):
-                        print(
-                            f"[Anti-AFK] Could not focus Roblox window "
-                            f"0x{hwnd:08X} for PID {pid}"
-                        )
-                        continue
-
-                    if not _perform_afk_action(_afk_key, _afk_press_count):
-                        print(
-                            f"[Anti-AFK] Input failed for Roblox window "
-                            f"0x{hwnd:08X} for PID {pid}"
-                        )
-                        continue
-
-                    successful_actions += 1
-                    print(
-                        f"[Anti-AFK] Action sent to Roblox window "
-                        f"0x{hwnd:08X} for PID {pid}"
-                    )
-            finally:
-                _restore_afk_window_states(window_states, original_hwnd)
+            successful_actions = _afk_run_round(window_states, manager, original_hwnd)
 
             if successful_actions == len(window_states):
                 next_wait_seconds = max(60, _afk_interval * 60)

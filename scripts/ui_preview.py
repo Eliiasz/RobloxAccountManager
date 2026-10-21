@@ -44,6 +44,7 @@ def main(out_dir: str) -> int:
     out.mkdir(parents=True, exist_ok=True)
     settings_store.save("last_place_id", "113290951185459")
     settings_store.save("anane_theme_applied", True)
+    settings_store.save("roblox_window_mode", "fit")  # show the Window Size drawing
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     from utils import ui

@@ -21,6 +21,8 @@ datas = [
     (str(ASSETS_ROOT / "icon.ico"), "assets"),
     (str(ASSETS_ROOT / "discordlogo.png"), "assets"),
     (str(ASSETS_ROOT / "logo.png"), "assets"),
+    # Release notes for the "What's new" popup after an update.
+    (str(PROJECT_ROOT / "release-notes" / "*.md"), "release-notes"),
 ]
 # Explicit inputs take precedence over native dependencies discovered on PATH.
 binaries = [

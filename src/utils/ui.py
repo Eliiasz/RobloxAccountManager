@@ -73,6 +73,8 @@ import features.color_themes as color_themes
 import features.cookie_validator as cookie_validator_mod
 import features.roblox_install_guard as install_guard_mod
 import features.pc_usage as pc_usage_mod
+import features.whats_new as whats_new_mod
+import features.roblox_window_size as window_size_mod
 import features.chromium as chromium_mod
 import features.diagnostics as diagnostics
 import features.favorites as favorites_mod
@@ -461,6 +463,7 @@ ENCRYPTION_TIPS = {
     "Unprotected": "Your saved accounts are stored without encryption.\n"
                    "Anyone with access to this PC's files could read them.",
 }
+WINDOW_SIZE_MODES = (("off", "Off (Roblox decides)"), ("size", "Fixed size"), ("fit", "Fit to screen"))
 PC_USAGE_SETTING = "pc_usage_show"
 PC_USAGE_INTERVAL_MS = 1000
 PC_RAM_WARN = 85.0
@@ -1701,6 +1704,164 @@ class _NavPanel(QFrame):
         QTimer.singleShot(0, self._sync)
 
 
+def _window_size_label(width: int, height: int) -> str:
+    ratio = "4:3" if width * 3 == height * 4 else "wide"
+    note = "  (5 across on 1080p)" if (width, height) == (384, 270) else ""
+    return f"{width} × {height}  {ratio}{note}"
+
+
+class _WindowSizePreview(QWidget):
+    """A small drawing of the screen filled with windows of the chosen size."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(150)
+        self.setMinimumWidth(240)
+        self._work = (0, 0, 1920, 1040)
+        self._size = (640, 480)
+        self._grid = (3, 2)
+        self._active = False
+
+    def set_layout(self, work, size, cols: int, rows: int, active: bool) -> None:
+        self._work, self._size, self._grid, self._active = work, size, (cols, rows), active
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        from PySide6.QtGui import QPainter, QPen, QColor
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        left, top, right, bottom = self._work
+        sw, sh = max(1, right - left), max(1, bottom - top)
+        scale = min((self.width() - 8) / sw, (self.height() - 8) / sh)
+        ox = (self.width() - sw * scale) / 2
+        oy = (self.height() - sh * scale) / 2
+        painter.setPen(QPen(QColor(LINE), 1))
+        painter.setBrush(QColor(INPUT))
+        painter.drawRoundedRect(int(ox), int(oy), int(sw * scale), int(sh * scale), 4, 4)
+        if not self._active:
+            painter.setPen(QColor(MUTED))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Roblox decides")
+            return
+        cols, rows = self._grid
+        w, h = self._size
+        painter.setPen(QPen(QColor(ACCENT_TEXT), 1))
+        painter.setBrush(QColor(ACCENT_TINT))
+        for row in range(min(rows, 40)):
+            for col in range(min(cols, 40)):
+                painter.drawRect(int(ox + col * w * scale) + 1, int(oy + row * h * scale) + 1,
+                                 max(2, int(w * scale) - 2), max(2, int(h * scale) - 2))
+
+
+class _SizeOutline(QWidget):
+    """A see-through box at the exact pixel size, for when no Roblox window is open."""
+
+    @classmethod
+    def show_for(cls, owner, width: int, height: int) -> None:
+        old = getattr(owner, "_size_outline", None)
+        if old is not None and isValid(old):
+            old.close()
+        outline = cls(width, height, owner.screen() if hasattr(owner, "screen") else None)
+        owner._size_outline = outline
+        outline.show()
+        outline.raise_()
+        outline.activateWindow()
+
+    def __init__(self, width: int, height: int, screen=None):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+                         | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._label = f"{width} × {height}"
+        screen = screen or QApplication.primaryScreen()
+        ratio = screen.devicePixelRatio() if screen else 1.0
+        self.resize(max(1, round(width / ratio)), max(1, round(height / ratio)))
+        if screen:
+            geo = screen.availableGeometry()
+            self.move(geo.x() + (geo.width() - self.width()) // 2, geo.y() + (geo.height() - self.height()) // 2)
+        QTimer.singleShot(15000, self, self.close)
+
+    def paintEvent(self, _event) -> None:
+        from PySide6.QtGui import QPainter, QPen, QColor
+        painter = QPainter(self)
+        fill = QColor(ACCENT_TEXT)
+        fill.setAlpha(40)
+        painter.fillRect(self.rect(), fill)
+        pen = QPen(QColor(ACCENT_TEXT), 2, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
+        painter.setPen(QColor("#FFFFFF"))
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                         f"{self._label}\nRoblox window size\n(click or Esc to close)")
+
+    def mousePressEvent(self, _event) -> None:
+        self.close()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+
+
+class _PreviewKeepBar(QDialog):
+    """Keep / Undo for a window size preview. Undo happens by itself after 15 s."""
+
+    @classmethod
+    def ask(cls, owner, text: str, keep, undo) -> "_PreviewKeepBar":
+        bar = cls(owner, text, keep, undo)
+        bar.show()
+        return bar
+
+    def __init__(self, owner, text: str, keep, undo):
+        super().__init__(owner, Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setWindowTitle("Window size preview")
+        self._keep, self._undo, self._done = keep, undo, False
+        self._left = 15
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        self._lbl = QLabel(text)
+        lay.addWidget(self._lbl)
+        row = QHBoxLayout()
+        keep_btn = QPushButton("Keep")
+        keep_btn.setObjectName("primary")
+        self._undo_btn = QPushButton(f"Undo ({self._left})")
+        keep_btn.clicked.connect(lambda: self._finish(True))
+        self._undo_btn.clicked.connect(lambda: self._finish(False))
+        row.addWidget(keep_btn)
+        row.addWidget(self._undo_btn)
+        lay.addLayout(row)
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    def _tick(self) -> None:
+        self._left -= 1
+        if self._left <= 0:
+            self._finish(False)
+        else:
+            self._undo_btn.setText(f"Undo ({self._left})")
+
+    def _finish(self, keep: bool) -> None:
+        if self._done:
+            return
+        self._done = True
+        self._timer.stop()
+        try:
+            (self._keep if keep else self._undo)()
+        finally:
+            self.close()
+
+    def reject(self) -> None:
+        self._finish(False)
+
+    def closeEvent(self, event) -> None:
+        if not self._done:
+            self._done = True
+            self._timer.stop()
+            self._undo()
+        event.accept()
+
+
 class _RequiredUpdateDialog(QDialog):
     """Update window that can't be dismissed: Esc is ignored and closing it
     (Alt+F4, taskbar) calls on_close_attempt, which quits the app."""
@@ -1904,7 +2065,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge.place_icon_ready.connect(self._on_place_icon_ready)
         self._start_running_counter()
         self._start_pc_usage_timer()
+        self._start_window_size_watcher()
         QTimer.singleShot(8000, self._start_auto_backup)
+        QTimer.singleShot(900, self._show_whats_new)
 
         self._refresh_account_list()
         self._refresh_recent_games()
@@ -3502,6 +3665,30 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         row_interval.addWidget(self._afk_interval_spin)
         row_interval.addStretch(1)
         form.addLayout(row_interval)
+
+        # Delay between windows: each window is done on its own, then this wait.
+        row_delay = QHBoxLayout()
+        row_delay.setSpacing(8)
+        lbl_delay = QLabel("Delay between windows (s):")
+        lbl_delay.setStyleSheet(f"color: {MUTED}; font-size: 11px; min-width: 80px;")
+        row_delay.addWidget(lbl_delay)
+        self._afk_delay_spin = QDoubleSpinBox()
+        self._afk_delay_spin.setRange(0.0, actions.AFK_DELAY_MAX)
+        self._afk_delay_spin.setSingleStep(0.5)
+        self._afk_delay_spin.setDecimals(1)
+        self._afk_delay_spin.setValue(actions.afk_window_delay())
+        self._afk_delay_spin.setFixedWidth(60)
+        self._afk_delay_spin.setToolTip(
+            "Anti AFK opens one Roblox window at a time (at its own size, starting with the\n"
+            "top-left one), presses the key, puts it back, then waits this long before the next.\n"
+            "A longer delay is easier on the PC with many windows."
+        )
+        self._afk_delay_spin.setStyleSheet(self._afk_interval_spin.styleSheet().replace("QSpinBox", "QDoubleSpinBox"))
+        self._afk_delay_spin.valueChanged.connect(
+            lambda value: actions.save_ui_setting(actions.AFK_DELAY_SETTING, round(float(value), 1)))
+        row_delay.addWidget(self._afk_delay_spin)
+        row_delay.addStretch(1)
+        form.addLayout(row_delay)
 
         # Tooltip checkbox
         self._afk_tooltip_chk = QCheckBox("Show countdown tooltip")
@@ -5604,6 +5791,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         f.addWidget(self._sett_install_guard_chk)
 
+        self._build_window_size_section(f, _sec)
+
         f.addWidget(_sec("PERFORMANCE"))
         _moved_lbl = QLabel("FPS cap and graphics quality now have their own window: the Performance button on the Accounts page, under Recent games.")
         _moved_lbl.setWordWrap(True)
@@ -5731,54 +5920,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         _ram_row.addStretch(1)
         f.addLayout(_ram_row)
 
-        f.addWidget(_sec("WINDOW GRID"))
-        self._sett_window_grid_chk = _chk(
-            "window_grid_enabled", "Enable Window Grid Keybind",
-            "Register a global keybind that arranges every visible Roblox window\n"
-            "into an equal grid on the monitor under your cursor.",
-            on_change=self._on_sett_window_grid,
-        )
-        f.addWidget(self._sett_window_grid_chk)
-
-        window_grid_row = QHBoxLayout()
-        window_grid_row.setContentsMargins(20, 0, 0, 0)
-        window_grid_label = QLabel("Keybind")
-        window_grid_label.setToolTip(
-            "Click the button, press a shortcut, then release its main key."
-        )
-        window_grid_row.addWidget(window_grid_label)
-        window_grid_row.addStretch(1)
-        self._sett_window_grid_key_btn = _HotkeyCaptureButton(
-            str(
-                S.get(
-                    "window_grid_keybind",
-                    window_grid_mod.DEFAULT_HOTKEY,
-                )
-                or window_grid_mod.DEFAULT_HOTKEY
-            )
-        )
-        self._sett_window_grid_key_btn.setFixedWidth(150)
-        self._sett_window_grid_key_btn.setEnabled(
-            bool(S.get("window_grid_enabled", False))
-        )
-        self._sett_window_grid_key_btn.setToolTip(
-            "Click to record a global keybind. Press Escape to cancel.\n"
-            f"Default: {window_grid_mod.DEFAULT_HOTKEY}"
-        )
-        self._sett_window_grid_key_btn.recording_started.connect(
-            self._unregister_window_grid_hotkey
-        )
-        self._sett_window_grid_key_btn.recording_canceled.connect(
-            self._restore_window_grid_hotkey_after_recording
-        )
-        self._sett_window_grid_key_btn.sequence_changed.connect(
-            self._on_sett_window_grid_keybind
-        )
-        window_grid_row.addWidget(self._sett_window_grid_key_btn)
-        f.addLayout(window_grid_row)
-
         f.addWidget(_sec("SHORTCUT KEYS"))
-        _moved_lbl = QLabel("The Kill All and Minimize / Restore shortcut keys now have their own window: the Hotkey button on the Accounts page, under Recent games.")
+        _moved_lbl = QLabel("The Window Grid, Kill All and Minimize / Restore shortcut keys now have their own window: the Hotkey button on the Accounts page, under Recent games.")
         _moved_lbl.setWordWrap(True)
         _moved_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
         f.addWidget(_moved_lbl)
@@ -7477,6 +7620,43 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._show_update_dialog(latest)
         else:
             _show_info(self, "Up to Date", f"You are running the latest version (v{APP_VERSION}).")
+
+    def _show_whats_new(self) -> None:
+        """After an update: show what changed, once per version (offline, notes are built in)."""
+        try:
+            notes = whats_new_mod.pending(APP_VERSION, used_before=bool(getattr(self.manager, "accounts", None)))
+        except Exception as exc:
+            print(f"[WARNING] What's new: {exc}")
+            return
+        if not notes:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("What's new")
+        dlg.setMinimumSize(420, 300)
+        dlg.resize(460, 380)
+        dlg.setStyleSheet(
+            f"QDialog {{ background: {BG}; }} QLabel {{ color: {TEXT}; background: transparent; }}"
+        )
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(22, 18, 22, 18)
+        lay.setSpacing(10)
+        hdr = QLabel(f"Updated to v{APP_VERSION}")
+        hdr.setStyleSheet("font-size: 16px; font-weight: 700;")
+        lay.addWidget(hdr)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setAccessibleName("What's new")
+        view.setMarkdown("\n\n".join(text for _version, text in notes))
+        view.setStyleSheet(
+            f"QTextEdit {{ background: {INPUT}; color: {TEXT}; border: 1px solid {LINE}; font-size: 12px; }}"
+        )
+        lay.addWidget(view, 1)
+        ok = QPushButton("OK")
+        ok.setObjectName("primary")
+        ok.setFixedHeight(32)
+        ok.clicked.connect(dlg.accept)
+        lay.addWidget(ok)
+        dlg.exec()
 
     def _on_update_available(self, latest_version: str) -> None:
         self._show_update_dialog(latest_version)
@@ -9713,6 +9893,219 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         winkeys_note.setWordWrap(True)
         winkeys_note.setStyleSheet(f"color: {NOTE}; font-size: 11px; background: transparent;")
         f.addWidget(winkeys_note)
+
+        self._build_window_grid_group(body, S)
+
+    # Roblox window size ------------------------------------------------------
+    def _build_window_size_section(self, f: QVBoxLayout, _sec) -> None:
+        choice = window_size_mod.load_choice()
+        f.addWidget(_sec("WINDOW SIZE"))
+        desc = QLabel(
+            "Make every Roblox window the same size, e.g. small windows to fit many accounts on "
+            "one screen. Smaller windows also use less GPU. Sizes include the title bar."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(desc)
+
+        def _row(label: str, widget: QWidget) -> QWidget:
+            holder = QWidget()
+            lay = QHBoxLayout(holder)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lbl = QLabel(label)
+            lbl.setMinimumWidth(90)
+            lay.addWidget(lbl)
+            lay.addWidget(widget)
+            lay.addStretch(1)
+            f.addWidget(holder)
+            return holder
+
+        self._ws_mode_combo = QComboBox()
+        for key, label in WINDOW_SIZE_MODES:
+            self._ws_mode_combo.addItem(label, key)
+        self._ws_mode_combo.setCurrentIndex(max(0, self._ws_mode_combo.findData(choice.mode)))
+        _row("Window size", self._ws_mode_combo)
+
+        self._ws_size_combo = QComboBox()
+        for width, height in window_size_mod.PRESET_SIZES:
+            self._ws_size_combo.addItem(_window_size_label(width, height), [width, height])
+        self._ws_size_combo.addItem("Custom…", None)
+        index = self._ws_size_combo.findData(list(choice.size))
+        self._ws_size_combo.setCurrentIndex(index if index >= 0 else self._ws_size_combo.count() - 1)
+        self._ws_size_row = _row("Size", self._ws_size_combo)
+
+        custom = QWidget()
+        custom_lay = QHBoxLayout(custom)
+        custom_lay.setContentsMargins(0, 0, 0, 0)
+        self._ws_w_spin, self._ws_h_spin = QSpinBox(), QSpinBox()
+        for spin, value in ((self._ws_w_spin, choice.size[0]), (self._ws_h_spin, choice.size[1])):
+            spin.setRange(window_size_mod.MIN_SIDE, window_size_mod.MAX_SIDE)
+            spin.setValue(value)
+            spin.setFixedWidth(70)
+        custom_lay.addWidget(self._ws_w_spin)
+        custom_lay.addWidget(QLabel("×"))
+        custom_lay.addWidget(self._ws_h_spin)
+        self._ws_custom_row = _row("Custom", custom)
+
+        self._ws_layout_combo = QComboBox()
+        for cols, rows in window_size_mod.LAYOUTS:
+            self._ws_layout_combo.addItem(f"{cols} × {rows}  ({cols * rows} windows)", [cols, rows])
+        index = self._ws_layout_combo.findData(list(choice.layout))
+        self._ws_layout_combo.setCurrentIndex(max(0, index))
+        self._ws_layout_row = _row("Layout", self._ws_layout_combo)
+
+        self._ws_preview = _WindowSizePreview()
+        f.addWidget(self._ws_preview)
+        self._ws_info_lbl = QLabel()
+        self._ws_info_lbl.setWordWrap(True)
+        self._ws_info_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(self._ws_info_lbl)
+
+        buttons = QHBoxLayout()
+        self._ws_preview_btn = QPushButton("Preview")
+        self._ws_preview_btn.setToolTip(
+            "See the real size: one open Roblox window is resized for 15 seconds (Keep or Undo).\n"
+            "With no Roblox open, an outline of that size is shown instead.")
+        self._ws_preview_btn.clicked.connect(self._on_window_size_preview)
+        self._ws_apply_btn = QPushButton("Apply to open windows now")
+        self._ws_apply_btn.clicked.connect(self._on_window_size_apply)
+        buttons.addWidget(self._ws_preview_btn)
+        buttons.addWidget(self._ws_apply_btn)
+        buttons.addStretch(1)
+        f.addLayout(buttons)
+
+        for signal in (self._ws_mode_combo.currentIndexChanged, self._ws_size_combo.currentIndexChanged,
+                       self._ws_layout_combo.currentIndexChanged, self._ws_w_spin.valueChanged,
+                       self._ws_h_spin.valueChanged):
+            signal.connect(self._on_window_size_changed)
+        self._on_window_size_changed()
+
+    def _window_size_choice(self):
+        mode = self._ws_mode_combo.currentData() or window_size_mod.MODE_OFF
+        preset = self._ws_size_combo.currentData()
+        size = tuple(preset) if preset else (self._ws_w_spin.value(), self._ws_h_spin.value())
+        layout = tuple(self._ws_layout_combo.currentData() or window_size_mod.DEFAULT_LAYOUT)
+        return window_size_mod.Choice(mode, size, layout)
+
+    @staticmethod
+    def _screen_work_area() -> tuple[int, int, int, int]:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return 0, 0, 1920, 1040
+        geo, ratio = screen.availableGeometry(), screen.devicePixelRatio()
+        return (round(geo.x() * ratio), round(geo.y() * ratio),
+                round((geo.x() + geo.width()) * ratio), round((geo.y() + geo.height()) * ratio))
+
+    def _on_window_size_changed(self, *_args) -> None:
+        choice = self._window_size_choice()
+        window_size_mod.save_choice(choice)
+        mode = choice.mode
+        self._ws_size_row.setVisible(mode == window_size_mod.MODE_SIZE)
+        self._ws_custom_row.setVisible(mode == window_size_mod.MODE_SIZE and self._ws_size_combo.currentData() is None)
+        self._ws_layout_row.setVisible(mode == window_size_mod.MODE_FIT)
+        work = self._screen_work_area()
+        size = window_size_mod.target_size(choice, work)
+        if mode == window_size_mod.MODE_FIT:
+            cols, rows = choice.layout
+        else:
+            cols, rows = window_size_mod.how_many_fit(work, size)
+        self._ws_preview.set_layout(work, size, cols, rows, mode != window_size_mod.MODE_OFF)
+        if mode == window_size_mod.MODE_OFF:
+            text = "Off: Roblox picks its own window size."
+        else:
+            text = f"{cols} × {rows} = {cols * rows} windows fit on your screen · {size[0]} × {size[1]} each"
+        refused = actions.get_ui_setting(window_size_mod.REFUSED_SETTING)
+        if mode != window_size_mod.MODE_OFF and refused and (size[0] < refused[0] - 4 or size[1] < refused[1] - 4):
+            text += f"\nRoblox wouldn't go smaller than {refused[0]} × {refused[1]} on this PC."
+        self._ws_info_lbl.setText(text)
+        enabled = mode != window_size_mod.MODE_OFF
+        self._ws_preview_btn.setEnabled(enabled)
+        self._ws_apply_btn.setEnabled(enabled)
+
+    def _on_window_size_apply(self) -> None:
+        choice = self._window_size_choice()
+
+        def _worker():
+            count = window_size_mod.apply(choice)
+            print(f"[Window Size] Resized {count} Roblox window(s)")
+        threading.Thread(target=_worker, daemon=True, name="WindowSizeApply").start()
+
+    def _on_window_size_preview(self) -> None:
+        choice = self._window_size_choice()
+        work = self._screen_work_area()
+        width, height = window_size_mod.target_size(choice, work)
+        try:
+            windows = window_size_mod.roblox_windows()
+        except Exception:
+            windows = []
+        if not windows:
+            _SizeOutline.show_for(self, width, height)
+            return
+        hwnd = windows[0]
+        import win32gui
+        try:
+            placement = win32gui.GetWindowPlacement(hwnd)
+            left, top, right, bottom = work
+            x = left + max(0, (right - left - width) // 2)
+            y = top + max(0, (bottom - top - height) // 2)
+            actual = window_size_mod.resize_window(hwnd, width, height, x, y)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception as exc:
+            print(f"[Window Size] Preview failed: {exc}")
+            _SizeOutline.show_for(self, width, height)
+            return
+        self._on_window_size_changed()  # shows a "won't go smaller" note if Roblox refused
+
+        def _undo():
+            try:
+                win32gui.SetWindowPlacement(hwnd, placement)
+            except Exception:
+                pass
+
+        def _keep():
+            if choice.mode == window_size_mod.MODE_OFF:
+                return
+            window_size_mod.save_choice(choice)
+        _PreviewKeepBar.ask(self, f"Previewing {actual[0]} × {actual[1]} on a Roblox window", _keep, _undo)
+
+    def _start_window_size_watcher(self) -> None:
+        self._window_size_watcher = window_size_mod.WindowSizeWatcher()
+        self._window_size_watcher.start()
+
+    def _build_window_grid_group(self, body: QVBoxLayout, S: dict) -> None:
+        f = self._sheet_group(
+            body, "Window Grid shortcut", "windows",
+            "Press this key anywhere to arrange every visible Roblox window into an equal grid "
+            "on the monitor under your cursor. Anti AFK goes through the windows in this order.",
+        )
+        self._sett_window_grid_chk = self._settings_checkbox(
+            "window_grid_enabled", "Enable Window Grid Shortcut",
+            "Register a global keybind that arranges every visible Roblox window\n"
+            "into an equal grid on the monitor under your cursor.",
+            on_change=self._on_sett_window_grid,
+        )
+        f.addWidget(self._sett_window_grid_chk)
+        row = QHBoxLayout()
+        lbl = QLabel("Shortcut")
+        lbl.setStyleSheet(f"color: {MUTED}; font-size: 12px; background: transparent;")
+        lbl.setToolTip("Click the button, press a shortcut, then release its main key.")
+        row.addWidget(lbl)
+        row.addStretch(1)
+        self._sett_window_grid_key_btn = _HotkeyCaptureButton(
+            str(S.get("window_grid_keybind", window_grid_mod.DEFAULT_HOTKEY) or window_grid_mod.DEFAULT_HOTKEY)
+        )
+        self._sett_window_grid_key_btn.setFixedWidth(170)
+        self._sett_window_grid_key_btn.setEnabled(bool(S.get("window_grid_enabled", False)))
+        self._sett_window_grid_key_btn.setToolTip(
+            "Click to record a global keybind. Press Escape to cancel.\n"
+            f"Default: {window_grid_mod.DEFAULT_HOTKEY}"
+        )
+        self._sett_window_grid_key_btn.recording_started.connect(self._unregister_window_grid_hotkey)
+        self._sett_window_grid_key_btn.recording_canceled.connect(
+            self._restore_window_grid_hotkey_after_recording)
+        self._sett_window_grid_key_btn.sequence_changed.connect(self._on_sett_window_grid_keybind)
+        row.addWidget(self._sett_window_grid_key_btn)
+        f.addLayout(row)
 
     def _build_performance_settings(self, body: QVBoxLayout) -> None:
         S = actions.load_ui_settings()
