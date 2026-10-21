@@ -75,6 +75,7 @@ import features.roblox_install_guard as install_guard_mod
 import features.pc_usage as pc_usage_mod
 import features.whats_new as whats_new_mod
 import features.roblox_window_size as window_size_mod
+import features.file_holders as file_holders_mod
 import features.chromium as chromium_mod
 import features.diagnostics as diagnostics
 import features.favorites as favorites_mod
@@ -5299,6 +5300,30 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         timer.timeout.connect(_check)
         timer.start()
 
+    def _ask_close_lock_holders(self) -> bool:
+        """Say which program holds Roblox's login file; True if the user closed it."""
+        holders = list(actions.mr_lock_holders)
+        others = [name for _pid, name in holders if file_holders_mod.is_this_app(name)]
+        if not holders:
+            text = ("Multi Roblox needs to lock Roblox's login file, but another program is using it.\n"
+                    "Close Roblox, Roblox Studio and Bloxstrap-type launchers, then try again.")
+        elif others:
+            text = ("Another copy of ANAne RAM is still running and holding Roblox's login file "
+                    "(maybe left over from an update).")
+        else:
+            names = "\n".join(f"• {name} (PID {pid})" for pid, name in holders)
+            text = f"Multi Roblox needs to lock Roblox's login file, but this is using it:\n{names}"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Multi Roblox")
+        box.setText(text)
+        retry = box.addButton("Close it and retry", QMessageBox.ButtonRole.AcceptRole) if holders else None
+        box.addButton("Cancel" if holders else "OK", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if retry is not None and box.clickedButton() is retry:
+            return actions.close_lock_holders() > 0
+        return False
+
     def _finish_start_multi_roblox(self) -> None:
         ok, msg = actions.enable_multi_roblox(self._mr_method)
         if not ok:
@@ -5325,12 +5350,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                     "Handle64 was not found. Download Handle64 before enabling this mode.",
                 )
             elif msg == "ROBLOX_COOKIES_LOCK_FAILED":
-                QMessageBox.critical(
-                    self,
-                    "Multi Roblox",
-                    "The shared Roblox login data could not be protected. "
-                    "Close all Roblox clients and try again. See the Console for details.",
-                )
+                if self._ask_close_lock_holders():
+                    QTimer.singleShot(0, self._finish_start_multi_roblox)  # try again
+                    return
             elif msg == "HANDLE64_UNVERIFIED":
                 QMessageBox.critical(
                     self,
@@ -11640,6 +11662,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             btn.setText("Some left!")
             print(f"[WARNING] {result.message} {getattr(result, 'detail', '')}")
         btn.setEnabled(True)
+        # Nothing reopens behind your back: Auto-Rejoin waits, the queue pauses.
+        ar.pause_all()
+        q = getattr(self, "_launch_queue", None)
+        if q and not q.get("force"):  # Next Batch also uses Kill All; that one moves on
+            q["paused"] = True
+            q["pause_reason"] = "Kill All pressed; press Resume to continue"
+            print("[INFO] Batch queue paused by Kill All Roblox. Press Resume to continue.")
         delay = 5000 if getattr(self, "_kill_unknown_until", 0.0) > time.monotonic() else 1800
 
         def _reset():

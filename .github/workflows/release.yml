@@ -1,9 +1,13 @@
 name: Release
 
-# Publishes a GitHub Release (which the app's updater picks up) automatically
-# whenever the version in src/utils/version.py goes up on main and that
-# version has not been released yet. The full tests must pass first.
-# "Run workflow" re-runs it by hand for the current version.
+# Builds a GitHub Release automatically whenever the version in
+# src/utils/version.py goes up on main and that version has not been released
+# yet. The full tests must pass first. "Run workflow" re-runs it by hand.
+#
+# The release is a PRE-RELEASE ("test build"): the app's updater only looks
+# at the Latest release, so no user gets it yet. Test the exe, then run the
+# "Publish tested release" workflow (or untick "pre-release" on GitHub) to
+# send it to everyone.
 
 on:
   push:
@@ -128,6 +132,8 @@ jobs:
           generate_release_notes: false  # notes come only from release-notes/<tag>.md
           fail_on_unmatched_files: true
           body_path: ${{ steps.notes.outputs.path }}
+          prerelease: true    # test build: users get it only after "Publish tested release"
+          make_latest: false
           files: |
             dist/ANaneRAM-v*.exe
             dist/EvanovarRAM-v*.exe

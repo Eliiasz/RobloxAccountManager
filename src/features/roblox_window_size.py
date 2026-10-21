@@ -47,7 +47,9 @@ DEFAULT_LAYOUT = (5, 4)
 MIN_SIDE = 160
 MAX_SIDE = 3840
 _GAP = 2
-_WATCH_INTERVAL = 1.5
+_WATCH_INTERVAL = 0.5
+_FIGHT_LIMIT = 10          # Roblox growing a window back this often per minute: give up on it
+_FIGHT_WINDOW = 60.0
 _SETTLE_SECONDS = 1.0     # let a new window finish appearing before resizing it
 _TOLERANCE = 4
 
@@ -300,11 +302,47 @@ def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: i
     _l, _t, actual_w, actual_h = window_rect(hwnd)
     if actual_w > width + _TOLERANCE or actual_h > height + _TOLERANCE:
         settings_store.save(REFUSED_SETTING, [actual_w, actual_h])
+        _kept.pop(hwnd, None)
     else:
+        if allow_smaller:
+            _kept[hwnd] = (int(width), int(height))  # Roblox may grow it back; keep_sizes() fixes that
         minimum = refused_size()
         if minimum and below_minimum((actual_w, actual_h), minimum):
             settings_store.save(REFUSED_SETTING, None)  # it went smaller after all
     return actual_w, actual_h
+
+
+_kept: dict[int, tuple[int, int]] = {}         # windows shrunk below Roblox's minimum
+_fights: dict[int, list[float]] = {}
+_given_up: set[int] = set()
+
+
+def keep_sizes(now: float | None = None) -> list[int]:
+    """Roblox puts its window back to its minimum when it is clicked. Shrink
+    those windows again; stop for a window Roblox keeps fighting over."""
+    now = time.monotonic() if now is None else now
+    fixed = []
+    for hwnd, (width, height) in list(_kept.items()):
+        try:
+            _l, _t, w, h = window_rect(hwnd)
+        except Exception:
+            _kept.pop(hwnd, None)
+            continue
+        if w <= width + _TOLERANCE and h <= height + _TOLERANCE:
+            continue
+        recent = [t for t in _fights.get(hwnd, []) if now - t < _FIGHT_WINDOW] + [now]
+        _fights[hwnd] = recent
+        if len(recent) > _FIGHT_LIMIT:
+            _kept.pop(hwnd, None)
+            _given_up.add(hwnd)
+            print(f"[Window Size] Roblox keeps resizing a window back to {w} x {h}; stopped re-shrinking it.")
+            continue
+        try:
+            resize_window(hwnd, width, height, allow_smaller=True)
+            fixed.append(hwnd)
+        except Exception:
+            _kept.pop(hwnd, None)
+    return fixed
 
 
 def test_methods(hwnd: int, width: int, height: int) -> list[tuple[str, tuple[int, int], bool]]:
@@ -435,7 +473,12 @@ class WindowSizeWatcher:
     def tick(self, now: float | None = None) -> list[int]:
         choice = load_choice()
         if choice.mode == MODE_OFF:
+            _kept.clear()
             return []
+        if choice.allow_smaller:
+            keep_sizes(now)
+        else:
+            _kept.clear()
         now = time.monotonic() if now is None else now
         windows = roblox_windows()
         live = set(windows)

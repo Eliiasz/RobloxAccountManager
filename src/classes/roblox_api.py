@@ -829,11 +829,19 @@ class RobloxAPI:
                     # cannot fail with "Installer encountered a critical error".
                     from features import roblox_install_guard as guard
                     if guard.enabled():
-                        exe = guard.start_direct(direct_args)
-                        if exe:
+                        status, exe = guard.start_direct(direct_args)
+                        if status == guard.DIRECT_STARTED:
                             print(f"[SUCCESS] Roblox started directly ({os.path.basename(os.path.dirname(exe))}), "
                                   "skipping the updater")
                             return OperationResult.success()
+                        if status == guard.DIRECT_FAILED:
+                            # Never fall back here: Roblox may still open, which
+                            # would put the same account in two windows.
+                            return OperationResult.failure(
+                                "ROBLOX_LAUNCH_FAILED", "Roblox Could Not Start",
+                                "Roblox quit right after starting. Try again.",
+                                retryable=True,
+                            )
                 os.startfile(url)
                 print("[SUCCESS] Roblox launched successfully!")
                 return OperationResult.success()

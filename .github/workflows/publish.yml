@@ -1,0 +1,29 @@
+name: Publish tested release
+
+# Sends a tested pre-release to every user: it becomes the Latest release,
+# which the app's updater checks on every start.
+# Actions > Publish tested release > Run workflow > type the version (e.g. 2.10.6).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 2.10.6)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          tag="v${VERSION#v}"
+          gh release view "$tag" --repo "${{ github.repository }}" >/dev/null
+          gh release edit "$tag" --repo "${{ github.repository }}" --prerelease=false --latest
+          echo "$tag is now the Latest release; apps update on their next start."

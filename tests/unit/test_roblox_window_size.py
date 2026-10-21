@@ -132,6 +132,37 @@ class MethodTests(unittest.TestCase):
             self.assertEqual(ws.current_method(True), "no_border_no_clamp")
 
 
+class KeepSizeTests(unittest.TestCase):
+    def setUp(self):
+        ws._kept.clear()
+        ws._fights.clear()
+        ws._given_up.clear()
+
+    def test_grown_back_window_is_shrunk_again(self):
+        ws._kept[7] = (320, 240)
+        with patch.object(ws, "window_rect", return_value=(0, 0, 1020, 797)), \
+                patch.object(ws, "resize_window") as resize:
+            self.assertEqual(ws.keep_sizes(now=1.0), [7])
+        resize.assert_called_once_with(7, 320, 240, allow_smaller=True)
+
+    def test_window_at_size_is_left_alone(self):
+        ws._kept[7] = (320, 240)
+        with patch.object(ws, "window_rect", return_value=(0, 0, 320, 240)), \
+                patch.object(ws, "resize_window") as resize:
+            self.assertEqual(ws.keep_sizes(now=1.0), [])
+        resize.assert_not_called()
+
+    def test_gives_up_when_roblox_keeps_fighting(self):
+        ws._kept[7] = (320, 240)
+        with patch.object(ws, "window_rect", return_value=(0, 0, 1020, 797)), \
+                patch.object(ws, "resize_window") as resize:
+            for second in range(ws._FIGHT_LIMIT + 1):
+                ws.keep_sizes(now=float(second))
+        self.assertEqual(resize.call_count, ws._FIGHT_LIMIT)
+        self.assertNotIn(7, ws._kept)
+        self.assertIn(7, ws._given_up)
+
+
 class WatcherTests(unittest.TestCase):
     def test_new_windows_are_resized_once_after_settling(self):
         watcher = ws.WindowSizeWatcher()

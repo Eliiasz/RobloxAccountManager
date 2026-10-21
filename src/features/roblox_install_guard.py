@@ -118,11 +118,28 @@ def direct_args(ticket: str, launch_time_ms: int, tracker: str, place_launcher_u
     return args
 
 
-def start_direct(args: list[str]) -> str:
-    """Start the open windows' game exe directly. Returns its path, or "" to use the normal launcher."""
+DIRECT_STARTED, DIRECT_UNAVAILABLE, DIRECT_FAILED = "started", "unavailable", "failed"
+_MAX_DIRECT_FAILURES = 2
+_direct_failures = 0
+
+
+def start_direct(args: list[str]) -> tuple[str, str]:
+    """Start the open windows' game exe directly. Returns (status, exe path).
+
+    "unavailable": nothing was started, use the normal launcher.
+    "started": Roblox is starting (an exit code 0 within a few seconds means it
+       handed off to another process, which is normal).
+    "failed": Roblox was started but quit with an error. The normal launcher
+       is NOT used for this launch, so an account is never opened twice;
+       after a couple of failures in a row direct starts are switched off for
+       this session.
+    """
+    global _direct_failures
+    if _direct_failures >= _MAX_DIRECT_FAILURES:
+        return DIRECT_UNAVAILABLE, ""
     exe = running_client_exe()
     if not exe:
-        return ""
+        return DIRECT_UNAVAILABLE, ""
     try:
         process = subprocess.Popen(
             [exe, *args], cwd=os.path.dirname(exe),
@@ -130,13 +147,20 @@ def start_direct(args: list[str]) -> str:
         )
     except OSError as exc:
         print(f"[WARNING] Direct Roblox start failed ({exc}); using the normal launcher")
-        return ""
+        return DIRECT_UNAVAILABLE, ""
     try:
         code = process.wait(timeout=_QUICK_EXIT_SECONDS)
     except subprocess.TimeoutExpired:
-        return exe
-    print(f"[WARNING] Direct Roblox start closed at once (exit code {code}); using the normal launcher")
-    return ""
+        _direct_failures = 0
+        return DIRECT_STARTED, exe
+    if code == 0:
+        _direct_failures = 0
+        return DIRECT_STARTED, exe
+    _direct_failures += 1
+    print(f"[WARNING] Direct Roblox start quit with exit code {code}; not launching twice.")
+    if _direct_failures >= _MAX_DIRECT_FAILURES:
+        print("[WARNING] Direct Roblox starts keep failing; using Roblox's normal launcher for the rest of this session.")
+    return DIRECT_FAILED, exe
 
 
 def watch_error_windows(seconds: float = _WATCH_SECONDS) -> None:

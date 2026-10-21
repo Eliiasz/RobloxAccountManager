@@ -2198,6 +2198,52 @@ def _lock_roblox_storage_file(filename: str) -> dict:
     return {"file": cookie_file, "acquired": True, "offset": 0, "length": lock_length}
 
 
+_LOCK_RETRY_SECONDS = 2.0
+mr_lock_holders: list[tuple[int, str]] = []   # who blocked the last failed lock
+
+
+def _lock_storage_with_retry(filename: str) -> dict:
+    """Lock a shared Roblox file, retrying briefly (Windows can keep it busy
+    for a moment after Roblox closes). On failure, remembers which programs
+    hold it (mr_lock_holders) and names them in the error."""
+    global mr_lock_holders
+    deadline = time.monotonic() + _LOCK_RETRY_SECONDS
+    while True:
+        try:
+            lock = _lock_roblox_storage_file(filename)
+            mr_lock_holders = []
+            return lock
+        except OSError as exc:
+            if time.monotonic() >= deadline:
+                path = os.path.join(os.getenv("LOCALAPPDATA", ""), "Roblox", "LocalStorage", filename)
+                try:
+                    import features.file_holders as file_holders
+                    holders = [(pid, name) for pid, name in file_holders.who_has(path) if pid != os.getpid()]
+                except Exception:
+                    holders = []
+                mr_lock_holders = holders
+                who = ", ".join(f"{name} (PID {pid})" for pid, name in holders) or "unknown program"
+                raise OSError(f"{exc}; held by: {who}") from exc
+            time.sleep(0.5)
+
+
+def close_lock_holders() -> int:
+    """Close the programs that blocked the Multi Roblox lock (never this app itself)."""
+    closed = 0
+    for pid, name in list(mr_lock_holders):
+        if pid == os.getpid():
+            continue
+        try:
+            psutil.Process(pid).kill()
+            closed += 1
+            print(f"[Multi Roblox] Closed {name} (PID {pid}), which was holding Roblox's login file.")
+        except psutil.Error as exc:
+            print(f"[Multi Roblox] Could not close {name} (PID {pid}): {exc}")
+    if closed:
+        time.sleep(1.0)
+    return closed
+
+
 def enable_multi_roblox(method: str = "default") -> tuple[bool, str]:
     # Startup changes the native context used by every launch entry point.
     # Do not block the UI while an existing launch is being confirmed.
@@ -2244,8 +2290,8 @@ def _enable_multi_roblox(method: str) -> tuple[bool, str]:
 
         cookie_lock = None
         try:
-            cookie_lock = _lock_roblox_storage_file("RobloxCookies.dat")
-            app_storage_lock = _lock_roblox_storage_file("appStorage.json")
+            cookie_lock = _lock_storage_with_retry("RobloxCookies.dat")
+            app_storage_lock = _lock_storage_with_retry("appStorage.json")
         except OSError as exc:
             if cookie_lock:
                 cookie_lock["file"].close()
@@ -2343,9 +2389,9 @@ def _enable_multi_roblox(method: str) -> tuple[bool, str]:
         "mutexes": mutexes,
     }
     try:
-        cookie_lock = _lock_roblox_storage_file("RobloxCookies.dat")
+        cookie_lock = _lock_storage_with_retry("RobloxCookies.dat")
         state.update(file=cookie_lock["file"], cookie_lock=cookie_lock)
-        state["app_storage_lock"] = _lock_roblox_storage_file("appStorage.json")
+        state["app_storage_lock"] = _lock_storage_with_retry("appStorage.json")
     except OSError as exc:
         print(f"[Multi Roblox] Could not protect the shared login data: {exc}")
         _release_multi_roblox_resources(state)

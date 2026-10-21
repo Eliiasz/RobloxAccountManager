@@ -262,6 +262,20 @@ def _wait_presence_slot(stop_event: threading.Event, gap: float = 0.4) -> bool:
         if stop_event.wait(sleep):
             return False
 
+_paused_until = 0.0
+KILL_ALL_PAUSE_SECONDS = 60
+
+
+def pause_all(seconds: float = KILL_ALL_PAUSE_SECONDS) -> None:
+    """Hold every Auto-Rejoin relaunch for a while (used by Kill All Roblox)."""
+    global _paused_until
+    _paused_until = max(_paused_until, time.monotonic() + seconds)
+
+
+def paused_seconds_left() -> int:
+    return max(0, int(round(_paused_until - time.monotonic())))
+
+
 class AutoRejoinWorker:
     def __init__(
         self,
@@ -358,6 +372,11 @@ class AutoRejoinWorker:
         private_server: str,
         job_id: str,
     ) -> bool:
+        # Kill All Roblox pauses every rejoin for a while, so closed accounts
+        # don't come straight back.
+        while not self._stop.is_set() and paused_seconds_left() > 0:
+            self._emit(f"Paused after Kill All ({paused_seconds_left()}s)")
+            self._stop.wait(1.0)
         # Another account may hold this lock while its client starts. Stop must
         # cancel our queued launch without waiting for that client's startup.
         while not self._stop.is_set():

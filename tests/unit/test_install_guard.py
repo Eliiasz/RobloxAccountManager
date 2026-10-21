@@ -34,8 +34,11 @@ class DirectArgsTests(unittest.TestCase):
 
 class ExecuteLaunchTests(unittest.TestCase):
     def _run(self, enabled, started):
+        status = guard.DIRECT_STARTED if started else guard.DIRECT_UNAVAILABLE
+        if started == "failed":
+            status = guard.DIRECT_FAILED
         with mock.patch.object(guard, "enabled", return_value=enabled), \
-                mock.patch.object(guard, "start_direct", return_value=started) as direct, \
+                mock.patch.object(guard, "start_direct", return_value=(status, started or "")) as direct, \
                 mock.patch("classes.roblox_api.os.startfile", create=True) as startfile:
             result = RobloxAPI._execute_launch("roblox-player:1", "default", "", ["--app"])
         return result, direct, startfile
@@ -51,6 +54,12 @@ class ExecuteLaunchTests(unittest.TestCase):
         self.assertTrue(result)
         startfile.assert_called_once_with("roblox-player:1")
 
+    def test_failed_direct_start_never_launches_twice(self):
+        result, _direct, startfile = self._run(True, "failed")
+        self.assertFalse(result)
+        self.assertEqual(result.code, "ROBLOX_LAUNCH_FAILED")
+        startfile.assert_not_called()
+
     def test_off_uses_the_normal_launcher(self):
         _result, direct, startfile = self._run(False, "x")
         direct.assert_not_called()
@@ -58,24 +67,36 @@ class ExecuteLaunchTests(unittest.TestCase):
 
 
 class StartDirectTests(unittest.TestCase):
-    def test_no_open_roblox_means_normal_launcher(self):
-        with mock.patch.object(guard, "running_client_exe", return_value=""):
-            self.assertEqual(guard.start_direct(["--app"]), "")
+    def setUp(self):
+        guard._direct_failures = 0
 
-    def test_quick_exit_means_normal_launcher(self):
+    def _start(self, wait):
         process = mock.Mock()
-        process.wait.return_value = 1
-        with mock.patch.object(guard, "running_client_exe", return_value=__file__), \
-                mock.patch.object(guard.subprocess, "Popen", return_value=process):
-            self.assertEqual(guard.start_direct(["--app"]), "")
-
-    def test_still_running_means_started(self):
-        process = mock.Mock()
-        process.wait.side_effect = subprocess.TimeoutExpired("x", 3)
+        if isinstance(wait, Exception):
+            process.wait.side_effect = wait
+        else:
+            process.wait.return_value = wait
         with mock.patch.object(guard, "running_client_exe", return_value=__file__), \
                 mock.patch.object(guard.subprocess, "Popen", return_value=process) as popen:
-            self.assertEqual(guard.start_direct(["--app", "-t", "T"]), __file__)
+            return guard.start_direct(["--app", "-t", "T"]), popen
+
+    def test_no_open_roblox_means_normal_launcher(self):
+        with mock.patch.object(guard, "running_client_exe", return_value=""):
+            self.assertEqual(guard.start_direct(["--app"])[0], guard.DIRECT_UNAVAILABLE)
+
+    def test_still_running_means_started(self):
+        (status, exe), popen = self._start(subprocess.TimeoutExpired("x", 3))
+        self.assertEqual((status, exe), (guard.DIRECT_STARTED, __file__))
         self.assertEqual(popen.call_args.args[0], [__file__, "--app", "-t", "T"])
+
+    def test_handing_off_with_exit_code_zero_is_started(self):
+        # Roblox often hands off to a new process; that used to cause a second launch.
+        self.assertEqual(self._start(0)[0][0], guard.DIRECT_STARTED)
+
+    def test_error_exit_fails_and_repeated_failures_switch_direct_off(self):
+        self.assertEqual(self._start(1)[0][0], guard.DIRECT_FAILED)
+        self.assertEqual(self._start(1)[0][0], guard.DIRECT_FAILED)
+        self.assertEqual(self._start(1)[0][0], guard.DIRECT_UNAVAILABLE)
 
 
 class UpdateCheckTests(unittest.TestCase):
