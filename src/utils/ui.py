@@ -3803,8 +3803,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         desc = QLabel(
             "Scans every saved account and lists the ones that are banned, terminated, whose login "
             "no longer works (locked / signed out), or that got Roblox's \"not a bot\" security check "
-            "when launching (Needs verification). Tick the ones you want gone and delete them. "
-            "Needs verification accounts are ticked by Tick All Problems; Unknown ones never are."
+            "when launching (Needs verification). Tick the ones you want gone (one by one, or a whole "
+            "status with Tick by status) and delete them. OK accounts can't be ticked."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
@@ -3951,6 +3951,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if problem or result.status in (health_mod.UNKNOWN, *health_mod.ATTENTION_STATUSES):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(0, Qt.CheckState.Checked if problem else Qt.CheckState.Unchecked)
+        else:
+            # OK accounts can never be ticked (tree items are tickable by default).
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
         item.setForeground(1, QColor(self._BAN_COLORS.get(result.status, TEXT)))
         item.setToolTip(2, result.detail)
         self._ban_tree.blockSignals(True)
@@ -5577,7 +5580,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "running, so Roblox's updater can't crash with \"Installer encountered a critical error\".\n"
             "Roblox error boxes are closed automatically, and when a Roblox update is out the\n"
             "first account opens alone so the update installs before the rest.\n"
-            "Applies to the Default launcher.",
+            "Applies to the Automatic (roblox://) launcher.",
             default=True,
         )
         f.addWidget(self._sett_install_guard_chk)
