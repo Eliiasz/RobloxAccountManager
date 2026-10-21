@@ -1,7 +1,9 @@
 from types import SimpleNamespace
+import sys
 import unittest
 from unittest.mock import patch
 
+from features import pc_usage
 from utils import ui
 
 
@@ -38,11 +40,47 @@ class PcUsageHeaderTests(unittest.TestCase):
         self.assertIn("1.5 GB", tip)
 
     def test_reads_real_numbers(self):
-        used, total, cpu = ui.AccountManagerUIQt._read_pc_usage()
+        reader = pc_usage.PcUsageReader()
+        try:
+            used, total, cpu = reader.read()
+        finally:
+            reader.close()
         self.assertGreater(total, 0)
         self.assertGreaterEqual(used, 0)
-        self.assertGreaterEqual(cpu, 0)
+        self.assertTrue(0 <= cpu <= 100)
 
+    def test_uses_task_manager_counter_on_windows(self):
+        if sys.platform != "win32":
+            self.skipTest("Windows only")
+        reader = pc_usage.PcUsageReader()
+        try:
+            self.assertIn(reader.source, ("utility", "time"))
+        finally:
+            reader.close()
+
+    def test_falls_back_when_counter_fails(self):
+        reader = pc_usage.PcUsageReader()
+        reader.close()
+        reader._query = object()  # a broken counter
+        with patch.object(pc_usage.psutil, "cpu_percent", return_value=37.0):
+            self.assertEqual(reader.cpu_percent(), 37.0)
+        reader._query = None
+
+    def test_boosted_values_are_capped_like_task_manager(self):
+        reader = pc_usage.PcUsageReader()
+        reader.close()
+        with patch.object(pc_usage.psutil, "cpu_percent", return_value=130.0):
+            self.assertEqual(reader.cpu_percent(), 100.0)
+
+    def test_tick_refreshes_the_line_every_second(self):
+        self.assertEqual(ui.PC_USAGE_INTERVAL_MS, 1000)
+        reader = SimpleNamespace(read=lambda: (1.0, 2.0, 3.0))
+        refresh = []
+        window = SimpleNamespace(_pc_usage_reader=reader, _last_running_count=2,
+                                 _on_running_count=lambda count, from_poll: refresh.append((count, from_poll)))
+        ui.AccountManagerUIQt._tick_pc_usage(window)
+        self.assertEqual(window._pc_usage, (1.0, 2.0, 3.0))
+        self.assertEqual(refresh, [(2, False)])
 
 if __name__ == "__main__":
     unittest.main()

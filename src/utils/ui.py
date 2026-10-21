@@ -72,6 +72,7 @@ import features.avatars as avatars
 import features.color_themes as color_themes
 import features.cookie_validator as cookie_validator_mod
 import features.roblox_install_guard as install_guard_mod
+import features.pc_usage as pc_usage_mod
 import features.chromium as chromium_mod
 import features.diagnostics as diagnostics
 import features.favorites as favorites_mod
@@ -461,6 +462,7 @@ ENCRYPTION_TIPS = {
                    "Anyone with access to this PC's files could read them.",
 }
 PC_USAGE_SETTING = "pc_usage_show"
+PC_USAGE_INTERVAL_MS = 1000
 PC_RAM_WARN = 85.0
 PC_CPU_WARN = 90.0
 PC_WARN_COLOR = "#F0A030"
@@ -1901,6 +1903,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge.game_name_ready.connect(self._game_name_label.setText)
         self._bridge.place_icon_ready.connect(self._on_place_icon_ready)
         self._start_running_counter()
+        self._start_pc_usage_timer()
         QTimer.singleShot(8000, self._start_auto_backup)
 
         self._refresh_account_list()
@@ -7792,17 +7795,28 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             tip += "\nWhole PC: memory in use and CPU load (like Task Manager). Orange means it's near the limit."
         return text, tip
 
-    @staticmethod
-    def _read_pc_usage() -> tuple[float, float, float] | None:
-        try:
-            memory = psutil.virtual_memory()
-            return (
-                (memory.total - memory.available) / 1024 / 1024,
-                memory.total / 1024 / 1024,
-                float(psutil.cpu_percent(interval=None)),
-            )
-        except Exception:
-            return None
+    def _start_pc_usage_timer(self) -> None:
+        """Whole-PC RAM/CPU, refreshed every second like Task Manager.
+
+        Reading the counters takes well under a millisecond, so it runs on the
+        UI thread; the slower Roblox window count keeps its own 2 s timer.
+        """
+        self._pc_usage_reader = pc_usage_mod.PcUsageReader()
+        print(f"[INFO] PC usage: CPU from {self._pc_usage_reader.source}")
+        self._pc_usage_timer = QTimer(self)
+        self._pc_usage_timer.setInterval(PC_USAGE_INTERVAL_MS)
+        self._pc_usage_timer.timeout.connect(self._tick_pc_usage)
+        self._pc_usage_timer.start()
+        QTimer.singleShot(250, self._tick_pc_usage)  # first real number right away
+
+    def _tick_pc_usage(self) -> None:
+        reader = getattr(self, "_pc_usage_reader", None)
+        if reader is None:
+            return
+        self._pc_usage = reader.read()
+        count = getattr(self, "_last_running_count", None)
+        if count is not None:
+            self._on_running_count(count, from_poll=False)
 
     def _start_running_counter(self) -> None:
         self._running_polling = False
@@ -7823,7 +7837,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 count = len(presence_mod.get_roblox_processes(max_age=1.0))
             except Exception:
                 count = -1
-            self._pc_usage = self._read_pc_usage()
             try:
                 self._bridge.roblox_count_ready.emit(count)
             except RuntimeError:
@@ -7842,7 +7855,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setText(text)
         label.setToolTip(tip)
-        label.setStyleSheet(f"color: {ONLINE_GREEN if count else MUTED};")
+        style = f"color: {ONLINE_GREEN if count else MUTED};"
+        if label.styleSheet() != style:
+            label.setStyleSheet(style)
 
     def _update_activity_rows(self) -> None:
         show_percent = bool(actions.get_ui_setting("ram_show_percent", False))

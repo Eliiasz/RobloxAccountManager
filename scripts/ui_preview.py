@@ -64,6 +64,8 @@ def main(out_dir: str) -> int:
         window.resize(1240, 820)
         window.show()
         wait(app, 900)
+        window._pc_usage_timer.stop()
+        window._pc_usage_reader = None
         window._pc_usage = (11.2 * 1024, 16 * 1024, 23.0)
         window._on_running_count(4, from_poll=False)
         window._account_list.setCurrentRow(2)
