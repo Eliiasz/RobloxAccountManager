@@ -561,8 +561,12 @@ class RobloxAPI:
         ) + 1_000_000_000_000_000
         launch_time = int(time.time() * 1000)
 
-        def execute_launch(url):
-            result = RobloxAPI._execute_launch(url, launcher_preference, custom_launcher_path)
+        def execute_launch(url, place_launcher_url=""):
+            from features import roblox_install_guard as guard
+            direct = guard.direct_args(auth_ticket, launch_time, browser_tracker_id, place_launcher_url)
+            result = RobloxAPI._execute_launch(url, launcher_preference, custom_launcher_path, direct)
+            if guard.enabled():
+                guard.watch_error_windows()
             if result:
                 # Roblox can replace the tracker in its logs. Preserve the ID
                 # sent to the client so the manager can identify that launch.
@@ -624,19 +628,21 @@ class RobloxAPI:
                 "Enter a Place ID or a valid private-server link.",
             )
 
-        url = (
-            "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket +
-            "+launchtime:" + str(launch_time) +
-            "+placelauncherurl:https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGameJob" +
+        place_launcher_url = (
+            "https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGameJob" +
             "&browserTrackerId=" + str(browser_tracker_id) +
             "&placeId=" + str(game_id) +
             "&isPlayTogetherGame=false"
         )
-
         if link_code:
-            url += "&linkCode=" + link_code
+            place_launcher_url += "&linkCode=" + link_code
         elif job_id:
-            url += "&gameId=" + str(job_id)
+            place_launcher_url += "&gameId=" + str(job_id)
+        url = (
+            "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket +
+            "+launchtime:" + str(launch_time) +
+            "+placelauncherurl:" + place_launcher_url
+        )
 
         url += (
             "+browsertrackerid:" + str(browser_tracker_id) +
@@ -651,10 +657,10 @@ class RobloxAPI:
             print(f"[INFO] Job ID: {job_id}")
         print(f"[INFO] Launcher: {launcher_preference}")
 
-        return execute_launch(url)
+        return execute_launch(url, place_launcher_url)
     
     @staticmethod
-    def _execute_launch(url, launcher_preference, custom_launcher_path=""):
+    def _execute_launch(url, launcher_preference, custom_launcher_path="", direct_args=None):
         """Execute the Roblox launch with the specified launcher"""
         try:
             if launcher_preference == "custom":
@@ -818,6 +824,16 @@ class RobloxAPI:
                 return OperationResult.success()
             
             elif launcher_preference == "default":
+                if direct_args:
+                    # With Roblox already open, skip its launcher/updater so it
+                    # cannot fail with "Installer encountered a critical error".
+                    from features import roblox_install_guard as guard
+                    if guard.enabled():
+                        exe = guard.start_direct(direct_args)
+                        if exe:
+                            print(f"[SUCCESS] Roblox started directly ({os.path.basename(os.path.dirname(exe))}), "
+                                  "skipping the updater")
+                            return OperationResult.success()
                 os.startfile(url)
                 print("[SUCCESS] Roblox launched successfully!")
                 return OperationResult.success()

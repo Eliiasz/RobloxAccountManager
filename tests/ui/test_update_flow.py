@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QTextEdit, QWidget
 
 from classes.operation_result import OperationResult
@@ -49,10 +50,10 @@ class StartupCheckTests(unittest.TestCase):
         window, _ = self.check(OperationResult.failure("UPDATE_CHECK_FAILED", "t", "m", detail="HTTP 500"))
         window._bridge.update_available.emit.assert_not_called()
 
-    def test_nothing_is_checked_when_the_setting_is_off(self):
-        window, fetch = self.check(release(), {"check_updates_on_startup": False})
-        fetch.assert_not_called()
-        window._bridge.update_available.emit.assert_not_called()
+    def test_the_old_off_switch_no_longer_skips_the_check(self):
+        window, fetch = self.check(release("9.9.9"), {"check_updates_on_startup": False})
+        fetch.assert_called_once()
+        window._bridge.update_available.emit.assert_called_once_with("9.9.9")
 
 
 class ManualCheckTests(unittest.TestCase):
@@ -133,16 +134,50 @@ class UpdateDialogTests(unittest.TestCase):
         self.window._latest_release = None
         self.assertEqual(self.open_dialog()[0]["notes"], [])
 
-    def test_the_dialog_has_no_skip_choice(self):
+    def test_the_update_is_required(self):
         seen, _ = self.open_dialog()
-        for label in ("Download Automatically", "Manual Download", "Later"):
-            self.assertIn(label, seen["buttons"])
-        self.assertNotIn("Skip This Version", seen["buttons"])
+        for label in ("Manual Download", "Later", "Skip This Version", "Download Automatically"):
+            self.assertNotIn(label, seen["buttons"])
+        self.assertEqual(len(seen["buttons"]), 1)
+        dialog = seen["dialog"]
+        self.assertEqual(dialog.windowTitle(), "Update Required")
+        self.assertFalse(dialog.windowFlags() & Qt.WindowType.WindowCloseButtonHint)
 
-    def test_later_remembers_nothing(self):
-        seen, save = self.open_dialog(act=lambda s: s["buttons"]["Later"].click())
-        save.assert_not_called()
+    def test_escape_does_nothing_and_closing_quits(self):
+        self.window._quit_for_update = MagicMock()
 
+        def act(seen):
+            dialog = seen["dialog"]
+            dialog.show()
+            dialog.reject()  # what Esc does
+            self.assertTrue(dialog.isVisible())
+            dialog.close()  # Alt+F4 / taskbar close
+            self.assertTrue(dialog.isVisible())
+            dialog.hide()
+
+        with patch.object(ui.QTimer, "singleShot", side_effect=lambda _ms, *a: a[-1]()), \
+                patch.object(ui.updater_mod, "download_update"):
+            self.window._bridge = MagicMock()
+            self.open_dialog(act=act)
+        self.window._quit_for_update.assert_called_once()
+
+    def test_download_starts_by_itself_and_failure_offers_only_retry(self):
+        self.window._bridge = ui._Bridge()
+        calls = []
+
+        def act(seen):
+            QApplication.processEvents()
+            self.assertEqual(len(calls), 1)  # started without a click
+            calls[0]["on_done"](False, "No internet")
+            QApplication.processEvents()
+            buttons = [b for b in seen["dialog"].findChildren(QPushButton)]
+            self.assertEqual([b.text() for b in buttons], ["Retry"])
+            self.assertTrue(buttons[0].isEnabled())
+            buttons[0].click()
+            self.assertEqual(len(calls), 2)
+
+        with patch.object(ui.updater_mod, "download_update", side_effect=lambda **kw: calls.append(kw)):
+            self.open_dialog(act=act)
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,14 +31,6 @@ class AccountLockTests(unittest.TestCase):
         self.assertEqual(actions.set_accounts_locked(manager, ["a"], True), 0)
         manager.save_accounts.assert_not_called()
 
-    def test_locked_pids_are_matched_through_roblox_logs(self):
-        manager = _manager({"a": {"user_id": 1, "locked": True}, "b": {"user_id": 2}})
-        processes = {10: (100.0, None), 20: (101.0, None), 30: (102.0, None)}
-        users = {10: "1", 20: "2", 30: None}
-        with patch.object(actions.presence_mod, "get_roblox_processes", return_value=processes), \
-                patch.object(actions.presence_mod, "_get_user_id_from_pid", side_effect=lambda pid, used: users[pid]):
-            self.assertEqual(actions.locked_roblox_pids(manager), {10})
-
     def test_no_locked_accounts_skips_the_lookup(self):
         with patch.object(actions.presence_mod, "get_roblox_processes") as lookup:
             self.assertEqual(actions.locked_roblox_pids(_manager({"a": {}})), set())

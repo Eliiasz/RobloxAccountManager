@@ -1159,7 +1159,7 @@ class RobloxAccountManager:
     )
 
     def _remember_security_check(self, username, challenged):
-        """Flag accounts Roblox challenged so Ban Check can list them."""
+        """Flag accounts Roblox challenged so Account Health can list them."""
         accounts = getattr(self, "accounts", None)
         lock = getattr(self, "_accounts_lock", None)
         if not isinstance(accounts, dict) or lock is None:

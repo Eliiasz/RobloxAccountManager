@@ -308,6 +308,27 @@ def _wait_for_first_client(before: int, timeout: float = _FIRST_ALONE_TIMEOUT) -
     return False
 
 
+def _roblox_update_first(label: str) -> bool:
+    """True when a Roblox update is waiting and no Roblox is open: open one account
+    alone first so the update installs before the rest start (installer guard)."""
+    try:
+        import features.roblox_install_guard as guard
+        if not guard.enabled():
+            return False
+        running = len(presence_mod.get_roblox_processes(force=True))
+        if not guard.update_pending():
+            return False
+    except Exception as exc:
+        print(f"[WARNING] {label}: Roblox update check failed: {exc}")
+        return False
+    if running:
+        print(f"[WARNING] {label}: a Roblox update is out. New accounts start on the version already "
+              "open; close all Roblox windows and launch again to install it.")
+        return False
+    print(f"[INFO] {label}: a Roblox update is out, opening the first account alone so it can install")
+    return True
+
+
 def _run_launch_batch(
     usernames: list[str],
     launch_one: Callable[[str, bool], OperationResult],
@@ -332,9 +353,11 @@ def _run_launch_batch(
         results[u] = result
         print(f"[{'SUCCESS' if result else 'ERROR'}] {label} {u}: {'OK' if result else 'FAIL'}")
 
+    update_first = len(usernames) > 1 and _roblox_update_first(label)
     if launch_delay <= 0 and len(usernames) > 1:
         if first_alone is None:
             first_alone = bool(load_ui_settings().get(FIRST_ALONE_SETTING, False))
+        first_alone = first_alone or update_first
         together = list(usernames)
         if first_alone:
             # Opt-in (Settings > Roblox): one client first, so a Roblox update
@@ -360,6 +383,15 @@ def _run_launch_batch(
             thread.join()
     else:
         for index, u in enumerate(usernames):
+            if index == 0 and update_first:
+                try:
+                    before = len(presence_mod.get_roblox_processes(force=True))
+                except Exception:
+                    before = 0
+                _one(u, False)
+                if results.get(u) and not _wait_for_first_client(before):
+                    print(f"[WARNING] {label}: {u} was not ready in time, starting the rest anyway")
+                continue
             _one(u, False)
             if index < len(usernames) - 1:
                 _wait_between_launches(index, len(usernames), launch_delay, usernames[index + 1])
@@ -2409,28 +2441,32 @@ def set_notes_in_memory(manager, usernames, note: str) -> None:
             accounts_lock.release()
 
 
-def locked_roblox_pids(manager) -> set[int]:
-    """PIDs of Roblox clients that belong to locked accounts.
+def locked_roblox_pids(manager, *, max_probes: int = 2, quiet: bool = True) -> set[int]:
+    """PIDs of Roblox clients that belong to locked accounts (certain matches only)."""
+    return locked_and_unknown_pids(manager, max_probes=max_probes, quiet=quiet)[0]
 
-    Each client is matched to its account through Roblox's own log files (the
-    same way the RAM usage display works). Clients that cannot be matched are
-    not protected.
+
+def locked_and_unknown_pids(manager, *, max_probes: int = 4, quiet: bool = False) -> tuple[set[int], set[int]]:
+    """(locked account windows, windows that could not be identified).
+
+    Matching uses the launch ID the app gave Roblox and the log file each
+    window has open (features.roblox_identity), not timing guesses, so many
+    accounts opening at once can no longer hide a locked window. With no
+    locked accounts nothing needs identifying and both sets are empty.
     """
     locked = locked_usernames(manager)
     if not locked:
-        return set()
-    uid_to_name = presence_mod._build_uid_map(manager)
+        return set(), set()
     try:
-        processes = presence_mod.get_roblox_processes(force=True)
-    except Exception:
-        return set()
-    keep: set[int] = set()
-    used_logs: set[str] = set()
-    for pid, (_created, _process) in sorted(processes.items(), key=lambda item: item[1][0]):
-        user_id = presence_mod._get_user_id_from_pid(pid, used_logs)
-        if user_id and uid_to_name.get(str(user_id)) in locked:
-            keep.add(pid)
-    return keep
+        import features.roblox_identity as identity_mod
+        return identity_mod.locked_and_unknown(manager, locked, max_probes=max_probes, quiet=quiet)
+    except Exception as exc:
+        print(f"[WARNING] Could not identify Roblox windows: {exc}")
+        try:
+            every = set(presence_mod.get_roblox_processes(force=True))
+        except Exception:
+            every = set()
+        return set(), every
 
 
 def kill_all_roblox_fast(keep_pids: set[int] | None = None) -> OperationResult:

@@ -71,6 +71,7 @@ import features.account_order as account_order
 import features.avatars as avatars
 import features.color_themes as color_themes
 import features.cookie_validator as cookie_validator_mod
+import features.roblox_install_guard as install_guard_mod
 import features.chromium as chromium_mod
 import features.diagnostics as diagnostics
 import features.favorites as favorites_mod
@@ -445,6 +446,19 @@ PRIMARY_BUTTON_QSS = (
     f"QPushButton:disabled {{ background: {RAISED}; color: {MUTED}; }}"
 )
 
+# Account Health statuses that get a "tick by status" button (never OK).
+HEALTH_PICK_STATUSES = (
+    health_mod.BANNED, health_mod.TERMINATED, health_mod.LOCKED,
+    health_mod.NEEDS_VERIFY, health_mod.UNKNOWN,
+)
+PC_USAGE_SETTING = "pc_usage_show"
+PC_RAM_WARN = 85.0
+PC_CPU_WARN = 90.0
+PC_WARN_COLOR = "#F0A030"
+KILL_ALL_TOOLTIP = (
+    "Instantly close every running Roblox window (no confirmation). Locked accounts stay open.\n"
+    "Right-click to turn the Kill All shortcut key on or off."
+)
 QUEUE_SELECT_FAILED_SETTING = "queue_select_failed"
 TITLE_BAR_HEIGHT = 66
 ROW_AVATAR_SIZE = 36
@@ -1676,6 +1690,24 @@ class _NavPanel(QFrame):
         QTimer.singleShot(0, self._sync)
 
 
+class _RequiredUpdateDialog(QDialog):
+    """Update window that can't be dismissed: Esc is ignored and closing it
+    (Alt+F4, taskbar) calls on_close_attempt, which quits the app."""
+
+    on_close_attempt = None
+
+    def reject(self) -> None:
+        pass
+
+    def closeEvent(self, event) -> None:
+        if getattr(self, "_allow_close", False):
+            event.accept()
+            return
+        event.ignore()
+        if callable(self.on_close_attempt):
+            self.on_close_attempt()
+
+
 class AccountManagerUIQt(QMainWindow): # Main Window
     def __init__(self, manager, icon_path: str | None = None):
         super().__init__()
@@ -1713,7 +1745,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             4: "Settings",
             5: "Console",
             6: "Contact Us",
-            8: "Ban Check",
+            8: "Account Health",
         }
         self._window_grid_hotkey_registered = False
         self._window_grid_hotkey_hwnd = 0
@@ -2743,7 +2775,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "Multi Roblox":3,
             "Settings":    4,
             "Console":     5,
-            "Ban Check":   8,
+            "Account Health": 8,
             "Contact Us":  6,
         }
 
@@ -2751,7 +2783,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         _nav_icons = {
             "Accounts": "accounts", "Auto-Rejoin": "refresh", "Anti AFK": "shield_check",
             "Multi Roblox": "windows", "Proxy": "globe", "Settings": "sliders", "Console": "terminal",
-            "Contact Us": "mail", "Ban Check": "ban",
+            "Contact Us": "mail", "Account Health": "pulse",
         }
 
         for label, checked in [
@@ -2761,7 +2793,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             ("Multi Roblox", False),
             ("Settings", False),
             ("Console", False),
-            ("Ban Check", False),
+            ("Account Health", False),
             ("Contact Us", False),
         ]:
             btn = QPushButton(f"  {label}")
@@ -2829,10 +2861,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         kill_roblox_button = QPushButton("  Kill All Roblox")
         kill_roblox_button.setObjectName("killAll")
         kill_roblox_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        kill_roblox_button.setToolTip(
-            "Instantly close every running Roblox window (no confirmation).\n"
-            "Right-click to turn the Kill All shortcut key on or off."
-        )
+        kill_roblox_button.setToolTip(KILL_ALL_TOOLTIP)
         self._kill_roblox_btn = kill_roblox_button
         kill_roblox_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         kill_roblox_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -3751,7 +3780,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         actions.save_ui_setting("anti_afk_tooltip_size", self._afk_tooltip_size)
         actions.save_ui_setting("anti_afk_enabled", self._afk_enabled)
 
-    # Ban Check -------------------------------------------------------------
+    # Account Health (formerly Ban Check) -------------------------------------------------------------
     def _build_ban_check_panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("centerPanel")
@@ -3762,7 +3791,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         hdr = QHBoxLayout()
         hdr.setContentsMargins(0, 0, 0, 0)
-        ttl = QLabel("Banned / Locked Accounts")
+        ttl = QLabel("Account Health")
         ttl.setObjectName("sectionTitle")
         hdr.addWidget(ttl)
         hdr.addStretch(1)
@@ -3805,6 +3834,34 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         top_row.addWidget(self._ban_show_ok_chk)
         top_row.addStretch(1)
         lay.addLayout(top_row)
+
+        # Pick by status: tick (or untick) every account with that status.
+        # There is deliberately no OK button; OK accounts can't be ticked.
+        pick_row = QHBoxLayout()
+        pick_row.setSpacing(6)
+        pick_lbl = QLabel("Tick by status:")
+        pick_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        pick_row.addWidget(pick_lbl)
+        pick_style = (
+            f"QPushButton {{ background: {INPUT}; border: 1px solid {LINE};"
+            f" color: {TEXT}; padding: 3px 10px; border-radius: 0; font-size: 11px; }}"
+            f"QPushButton:hover {{ background: {SELECT}; }}"
+            f"QPushButton:checked {{ background: {ACCENT_TINT}; border-color: {ACCENT_TINT_LINE}; color: {ACCENT_TEXT}; }}"
+            f"QPushButton:disabled {{ color: {MUTED}; }}"
+        )
+        self._ban_status_btns: dict[str, QPushButton] = {}
+        for status in HEALTH_PICK_STATUSES:
+            btn = QPushButton(f"{health_mod.LABELS[status]} (0)")
+            btn.setCheckable(True)
+            btn.setEnabled(False)
+            btn.setFixedHeight(24)
+            btn.setStyleSheet(pick_style)
+            btn.setToolTip(f"Tick every {health_mod.LABELS[status]} account. Click again to untick them.")
+            btn.clicked.connect(lambda checked, st=status: self._tick_ban_status(st, checked))
+            self._ban_status_btns[status] = btn
+            pick_row.addWidget(btn)
+        pick_row.addStretch(1)
+        lay.addLayout(pick_row)
 
         self._ban_tree = QTreeWidget()
         self._ban_tree.setColumnCount(3)
@@ -3863,6 +3920,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
         self._ban_tree.clear()
         self._ban_items.clear()
+        self._refresh_ban_status_buttons()
         self._ban_scan_btn.setEnabled(False)
         self._ban_stop_btn.setEnabled(True)
         self._ban_delete_btn.setEnabled(False)
@@ -3939,6 +3997,34 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._ban_tree.blockSignals(False)
         self._update_ban_delete_buttons()
 
+    def _tick_ban_status(self, status: str, tick: bool) -> None:
+        if status == health_mod.OK:
+            return
+        state = Qt.CheckState.Checked if tick else Qt.CheckState.Unchecked
+        self._ban_tree.blockSignals(True)
+        for item in self._ban_items.values():
+            if (item.data(0, Qt.ItemDataRole.UserRole) == status
+                    and item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                item.setCheckState(0, state)
+        self._ban_tree.blockSignals(False)
+        self._update_ban_delete_buttons()
+
+    def _refresh_ban_status_buttons(self) -> None:
+        buttons = getattr(self, "_ban_status_btns", None) or {}
+        for status, btn in buttons.items():
+            if not isValid(btn):
+                continue
+            items = [
+                item for item in self._ban_items.values()
+                if item.data(0, Qt.ItemDataRole.UserRole) == status
+                and item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+            ]
+            btn.setText(f"{health_mod.LABELS[status]} ({len(items)})")
+            btn.setEnabled(bool(items))
+            btn.blockSignals(True)
+            btn.setChecked(bool(items) and all(i.checkState(0) == Qt.CheckState.Checked for i in items))
+            btn.blockSignals(False)
+
     def _ticked_ban_usernames(self) -> list[str]:
         return [
             name for name, item in self._ban_items.items()
@@ -3949,6 +4035,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _update_ban_delete_buttons(self) -> None:
         if not isValid(self._ban_delete_btn):
             return
+        self._refresh_ban_status_buttons()
         count = len(self._ticked_ban_usernames())
         running = self._ban_checker is not None and self._ban_checker.running
         self._ban_delete_btn.setText(f"Delete Ticked ({count})")
@@ -4711,7 +4798,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         def _worker():
             try:
-                keep = actions.locked_roblox_pids(manager) if manager is not None else set()
+                keep = actions.locked_roblox_pids(manager, max_probes=2) if manager is not None else set()
                 closed = actions.close_roblox_error_windows(keep)
                 for title in closed:
                     print(f"[WARNING] Batch queue: closed a Roblox error window ({title}). "
@@ -4969,7 +5056,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                     "Multi Roblox",
                     "Roblox is currently running.\n"
                     "Multi Roblox (default) must be enabled before Roblox starts.\n"
-                    "Do you want to close all Roblox processes now?",
+                    "Do you want to close all Roblox processes now (including locked accounts)?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 if reply == QMessageBox.StandardButton.Yes:
@@ -5367,19 +5454,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         f.addLayout(import_browsers_row)
 
         f.addWidget(_sec("SYSTEM"))
-        self._sett_update_chk = _chk(
-            "check_updates_on_startup", "Check for Updates on Startup",
-            "Automatically check GitHub for a newer version when the app launches.\n"
-            "An update window will appear if a newer release is found.",
-        )
-        self._sett_update_chk.setChecked(
-            actions.load_ui_settings().get("check_updates_on_startup", True)
-        )
-        f.addWidget(self._sett_update_chk)
-
+        # Updates are required, so the startup check can't be turned off.
         self._sett_update_now_btn = QPushButton("Check for Updates Now")
         self._sett_update_now_btn.setToolTip(
-            "Look for a newer version on GitHub right now, including one you skipped."
+            "Look for a newer version on GitHub right now. The app checks on every start too."
         )
         self._sett_update_now_btn.clicked.connect(self._on_check_updates_now)
         f.addWidget(self._sett_update_now_btn)
@@ -5493,6 +5571,16 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "This lets a Roblox update finish first, so several installers don't crash each other.",
         )
         f.addWidget(self._sett_first_alone_chk)
+        self._sett_install_guard_chk = _chk(
+            install_guard_mod.SETTING, "Prevent Roblox installer errors while Roblox is open",
+            "While a Roblox window is open, new accounts start with the Roblox version already\n"
+            "running, so Roblox's updater can't crash with \"Installer encountered a critical error\".\n"
+            "Roblox error boxes are closed automatically, and when a Roblox update is out the\n"
+            "first account opens alone so the update installs before the rest.\n"
+            "Applies to the Default launcher.",
+            default=True,
+        )
+        f.addWidget(self._sett_install_guard_chk)
 
         f.addWidget(_sec("PERFORMANCE"))
         _moved_lbl = QLabel("FPS cap and graphics quality now have their own window: the Performance button on the Accounts page, under Recent games.")
@@ -7331,8 +7419,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 self._headless_set_status_label(p, False)
 
     def _start_update_check(self) -> None:
-        if not actions.load_ui_settings().get("check_updates_on_startup", True):
-            return
+        # Always runs: updates are required (the old "check on startup" switch is ignored).
         def _worker():
             result = updater_mod.get_latest_release()
             if not result:
@@ -7373,9 +7460,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _show_update_dialog(self, latest_version: str) -> None:
         release = getattr(self, "_latest_release", None) or {}
         notes = release.get("notes", "") if release.get("version") == latest_version else ""
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Update Available")
-        dlg.setFixedSize(440, 420 if notes else 290)
+        # Required update: no "Later", no close button, Esc does nothing, and
+        # closing the window some other way quits the app.
+        dlg = _RequiredUpdateDialog(self)
+        dlg.on_close_attempt = lambda: QTimer.singleShot(0, getattr(self, "_quit_for_update", lambda: None))
+        dlg.setWindowTitle("Update Required")
+        dlg.setWindowFlags(
+            Qt.WindowType.Dialog | Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint)
+        dlg.setFixedSize(440, 420 if notes else 270)
         dlg.setStyleSheet(f"""
             QDialog   {{ background: {BG}; }}
             QLabel    {{ color: {TEXT}; background: transparent; }}
@@ -7393,7 +7485,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         lay.setSpacing(12)
 
         # Header
-        hdr = QLabel("Update Available")
+        hdr = QLabel("Update Required")
         hdr.setStyleSheet("font-size: 15px; font-weight: 700; color: #EDEDED;")
         lay.addWidget(hdr)
 
@@ -7403,7 +7495,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         card_lay = QVBoxLayout(card)
         card_lay.setContentsMargins(14, 10, 14, 10)
         card_lay.setSpacing(4)
-        lbl_cur = QLabel(f"Your version is outdated:  v{APP_VERSION}")
+        lbl_cur = QLabel(f"Your version:  v{APP_VERSION}  (no longer supported)")
         lbl_cur.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
         lbl_new = QLabel(f"Latest version:  v{latest_version}")
         lbl_new.setStyleSheet(f"color: {ACCENT_TEXT}; font-size: 13px; font-weight: 600;")
@@ -7422,26 +7514,18 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
             lay.addWidget(notes_view, 1)
 
-        # Progress download button (mimics chromium bar)
-        dl_btn = QPushButton("Download Automatically")
+        # Progress bar / Retry button (only clickable after a failed download)
+        dl_btn = QPushButton("Downloading...  0%")
         dl_btn.setFixedHeight(34)
+        dl_btn.setEnabled(False)
         lay.addWidget(dl_btn)
 
         # Status label
-        status_lbl = QLabel("")
+        status_lbl = QLabel("The update downloads now. The app restarts when it's installed.")
+        status_lbl.setWordWrap(True)
         status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
         status_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(status_lbl)
-
-        # Bottom buttons
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        manual_btn = QPushButton("Manual Download")
-        ignore_btn = QPushButton("Later")
-        ignore_btn.setToolTip("Close for now. The update is offered again next time the app starts.")
-        btn_row.addWidget(manual_btn)
-        btn_row.addWidget(ignore_btn)
-        lay.addLayout(btn_row)
 
         # Helpers for the chromium-style progress bar
         def _set_progress(pct: int) -> None:
@@ -7465,8 +7549,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         def _set_buttons_enabled(enabled: bool) -> None:
             dl_btn.setEnabled(enabled)
-            manual_btn.setEnabled(enabled)
-            ignore_btn.setEnabled(enabled)
 
         # Download signal connections
         def _on_progress(pct: int) -> None:
@@ -7486,15 +7568,19 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 )
                 status_lbl.setText("The app will close and install the update.")
                 dlg.setEnabled(False)
+                dlg._allow_close = True
                 QTimer.singleShot(1500, self._quit_for_update)
             else:
                 _set_buttons_enabled(True)
-                dl_btn.setText("Download Automatically")
+                dl_btn.setText("Retry")
                 dl_btn.setStyleSheet("")
-                status_lbl.setText(f"Download failed: {err}")
+                status_lbl.setText(f"Download failed: {err}\n"
+                                   "Check your internet connection, then press Retry.")
 
         # Button actions
         def _on_download_clicked() -> None:
+            if not isValid(dl_btn) or getattr(self, "_bridge", None) is None:
+                return
             _set_buttons_enabled(False)
             _set_progress(0)
             status_lbl.setText("Starting download...")
@@ -7514,11 +7600,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             )
 
         dl_btn.clicked.connect(_on_download_clicked)
-        manual_btn.clicked.connect(lambda: (
-            webbrowser.open(updater_mod.RELEASES_PAGE),
-            dlg.accept(),
-        ))
-        ignore_btn.clicked.connect(dlg.accept)
+        QTimer.singleShot(0, dlg, _on_download_clicked)  # starts by itself
 
         dlg.exec()
 
@@ -7666,19 +7748,40 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._on_running_count(count, from_poll=False)
 
     def _running_header_text(self, count: int) -> tuple[str, str]:
+        """Header next to "Account List": running windows, then the whole PC's RAM and CPU."""
         text = f"{count} running"
         tip = "Roblox windows running on this PC"
         settings = actions.load_ui_settings()
-        if settings.get("presence_indicator", False) and settings.get("ram_show_total", True):
+        if settings.get("presence_indicator", False):
             running = [m for m in self._activity_snapshot.values() if m.get("ram_available")]
             if running:
                 total = sum(float(m.get("ram_mb", 0.0) or 0.0) for m in running)
-                text += f" · {self._format_mb(total)}"
-                pc_total = self._total_ram_mb()
-                if pc_total:
-                    text += f" ({total / pc_total * 100:.0f}%)"
-                tip += "\nRAM used by the running accounts (% of total PC memory)"
+                tip += f"\nRAM used by the running accounts: {self._format_mb(total)}"
+        usage = getattr(self, "_pc_usage", None)
+        if usage and settings.get(PC_USAGE_SETTING, settings.get("ram_show_total", True)):
+            used_mb, total_mb, cpu = usage
+            ram_pct = used_mb / total_mb * 100 if total_mb else 0.0
+            ram = f"RAM {used_mb / 1024:.1f} / {total_mb / 1024:.0f} GB ({ram_pct:.0f}%)"
+            cpu_text = f"CPU {cpu:.0f}%"
+            if ram_pct >= PC_RAM_WARN:
+                ram = f'<span style="color:{PC_WARN_COLOR};">{ram}</span>'
+            if cpu >= PC_CPU_WARN:
+                cpu_text = f'<span style="color:{PC_WARN_COLOR};">{cpu_text}</span>'
+            text += f' <span style="color:{MUTED};">·</span> {ram} <span style="color:{MUTED};">·</span> {cpu_text}'
+            tip += "\nWhole PC: memory in use and CPU load (like Task Manager). Orange means it's near the limit."
         return text, tip
+
+    @staticmethod
+    def _read_pc_usage() -> tuple[float, float, float] | None:
+        try:
+            memory = psutil.virtual_memory()
+            return (
+                (memory.total - memory.available) / 1024 / 1024,
+                memory.total / 1024 / 1024,
+                float(psutil.cpu_percent(interval=None)),
+            )
+        except Exception:
+            return None
 
     def _start_running_counter(self) -> None:
         self._running_polling = False
@@ -7699,6 +7802,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 count = len(presence_mod.get_roblox_processes(max_age=1.0))
             except Exception:
                 count = -1
+            self._pc_usage = self._read_pc_usage()
             try:
                 self._bridge.roblox_count_ready.emit(count)
             except RuntimeError:
@@ -7714,6 +7818,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
         self._last_running_count = count
         text, tip = self._running_header_text(count)
+        label.setTextFormat(Qt.TextFormat.RichText)
         label.setText(text)
         label.setToolTip(tip)
         label.setStyleSheet(f"color: {ONLINE_GREEN if count else MUTED};")
@@ -9646,13 +9751,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         f = self._sheet_group(
             body, "RAM usage", "gauge",
-            "Show how much RAM (and CPU) each running Roblox account uses, next to its name. "
-            "Updates every 5 seconds.",
+            "Show how much RAM (and CPU) each running Roblox account uses, next to its name, "
+            "and the whole PC's RAM and CPU above the account list.",
         )
         self._sett_monitoring_chk = self._settings_checkbox(
             "presence_indicator", "Show RAM Usage of Running Accounts",
-            "Show how much RAM (and CPU) each running Roblox account uses, next to its name,\n"
-            "plus a total above the account list. Updates every 5 seconds.",
+            "Show how much RAM (and CPU) each running Roblox account uses, next to its name.\n"
+            "Updates every 5 seconds.",
             on_change=self._on_sett_presence_indicator,
         )
         f.addWidget(self._sett_monitoring_chk)
@@ -9666,13 +9771,15 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         sub.addWidget(self._sett_ram_percent_chk)
         self._sett_ram_total_chk = self._settings_checkbox(
-            "ram_show_total", "Show total for all running accounts",
-            "Shows e.g. \"4 running · 2.6 GB (16%)\" above the account list.",
-            default=True,
-            on_change=lambda _on: self._update_activity_rows(),
+            PC_USAGE_SETTING, "Show PC RAM and CPU usage",
+            "Shows the whole computer's memory and CPU above the account list, e.g.\n"
+            "\"4 running · RAM 11.2 / 16 GB (70%) · CPU 23%\", so you don't need Task Manager.\n"
+            "Works even with the per-account RAM display off. Turns orange near the limit.",
+            default=bool(actions.get_ui_setting("ram_show_total", True)),
+            on_change=lambda _on: self._update_ram_total(),
         )
-        sub.addWidget(self._sett_ram_total_chk)
         f.addLayout(sub)
+        f.addWidget(self._sett_ram_total_chk)
 
         f = self._sheet_group(
             body, "RAM optimization", "bolt",
@@ -10913,16 +11020,27 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         btn.setText("Killing...")
 
         manager = self.manager
+        # A second press soon after a run that kept unidentified windows
+        # closes those too (locked accounts are still kept).
+        close_unknown = time.monotonic() < getattr(self, "_kill_unknown_until", 0.0)
+        self._kill_unknown_until = 0.0
 
         def _worker():
             try:
-                keep = actions.locked_roblox_pids(manager)
+                locked, unknown = actions.locked_and_unknown_pids(manager)
             except Exception as exc:
                 print(f"[WARNING] Could not check locked accounts: {exc}")
-                keep = set()
-            if keep:
-                print(f"[INFO] Kill All Roblox: keeping {len(keep)} locked account window(s) open")
-            result = actions.kill_all_roblox_fast(keep_pids=keep)
+                locked, unknown = set(), set()
+            if close_unknown:
+                unknown = set()
+            if locked:
+                print(f"[INFO] Kill All Roblox: keeping {len(locked)} locked account window(s) open")
+            if unknown:
+                print(f"[WARNING] Kill All Roblox: kept {len(unknown)} window(s) that could not be matched "
+                      "to an account (one may be locked). Press Kill All again within 5s to close them.")
+            result = actions.kill_all_roblox_fast(keep_pids=locked | unknown)
+            if result and isinstance(result.data, dict):
+                result = replace(result, data={**result.data, "kept": len(locked), "unknown": len(unknown)})
             self._bridge.kill_roblox_done.emit(result)
 
         threading.Thread(target=_worker, daemon=True, name="KillAllRoblox").start()
@@ -10935,15 +11053,27 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if result:
             data = (result.data or {}) if hasattr(result, "data") else {}
             games, kept = data.get("games", 0), data.get("kept", 0)
+            unknown = data.get("unknown", 0)
             text = f"Killed {games}" if games else "None running"
             if kept:
                 text = f"Killed {games} · {kept} locked"
+            if unknown:
+                text += f" · {unknown} unknown"
+                btn.setToolTip(f"{unknown} Roblox window(s) couldn't be matched to an account, so they were "
+                               "kept in case one is locked.\nPress Kill All again within 5 seconds to close them.")
+                self._kill_unknown_until = time.monotonic() + 5.0
             btn.setText(text)
         else:
             btn.setText("Some left!")
             print(f"[WARNING] {result.message} {getattr(result, 'detail', '')}")
         btn.setEnabled(True)
-        QTimer.singleShot(1800, lambda: isValid(btn) and btn.setText("  Kill All Roblox"))
+        delay = 5000 if getattr(self, "_kill_unknown_until", 0.0) > time.monotonic() else 1800
+
+        def _reset():
+            if isValid(btn):
+                btn.setText("  Kill All Roblox")
+                btn.setToolTip(KILL_ALL_TOOLTIP)
+        QTimer.singleShot(delay, _reset)
         if getattr(self, "_launch_queue", None):
             self._poll_queue()  # the queue sees the closed clients and moves on
 
