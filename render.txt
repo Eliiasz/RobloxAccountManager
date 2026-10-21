@@ -1,0 +1,17 @@
+[INFO] PC usage: CPU from utility
+[INFO] UI ready
+Saved previews to ui-preview
+Exception ignored on threading shutdown:
+Traceback (most recent call last):
+  File "D:\a\_temp\uv-python-dir\cpython-3.15-windows-x86_64-none\Lib\threading.py", line 1714, in _shutdown
+    atexit_call()
+    ~~~~~~~~~~~^^
+  File "D:\a\_temp\uv-python-dir\cpython-3.15-windows-x86_64-none\Lib\threading.py", line 1684, in <lambda>
+    _threading_atexits.append(lambda: func(*arg, **kwargs))
+                                      ~~~~^^^^^^^^^^^^^^^^
+  File "D:\a\_temp\uv-python-dir\cpython-3.15-windows-x86_64-none\Lib\concurrent\futures\thread.py", line 31, in _python_exit
+    t.join()
+    ~~~~~~^^
+  File "D:\a\_temp\uv-python-dir\cpython-3.15-windows-x86_64-none\Lib\threading.py", line 1260, in join
+    raise RuntimeError("cannot join thread before it is started")
+RuntimeError: cannot join thread before it is started
