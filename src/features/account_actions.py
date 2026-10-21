@@ -552,15 +552,20 @@ def set_note(manager, username: str, note: str) -> None:
     set_account_note(manager, username, note)
 
 # Encryption status badge
+ENCRYPTION_DEVICE_LABEL = "Device Locked"      # hardware encryption
+ENCRYPTION_PASSWORD_LABEL = "Password Locked"  # password encryption
+ENCRYPTION_NONE_LABEL = "Unprotected"
+
+
 def get_encryption_status(manager) -> tuple[str, str]:
     try:
         if manager.encryption_config.is_encryption_enabled():
             method = manager.encryption_config.get_encryption_method()
             if method == "hardware":
-                return "[HARDWARE ENCRYPTED]", "#90EE90"
+                return ENCRYPTION_DEVICE_LABEL, "#90EE90"
             elif method == "password":
-                return "[PASSWORD ENCRYPTED]", "#87CEEB"
-        return "[NOT ENCRYPTED]", "#FFB6C1"
+                return ENCRYPTION_PASSWORD_LABEL, "#87CEEB"
+        return ENCRYPTION_NONE_LABEL, "#FFB6C1"
     except Exception:
         return "", ""
 

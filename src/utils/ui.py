@@ -451,6 +451,15 @@ HEALTH_PICK_STATUSES = (
     health_mod.BANNED, health_mod.TERMINATED, health_mod.LOCKED,
     health_mod.NEEDS_VERIFY, health_mod.UNKNOWN,
 )
+SETTINGS_MISC_TAB = 3  # index of "Misc" in the Settings categories
+ENCRYPTION_TIPS = {
+    "Device Locked": "Your saved accounts are encrypted with a key tied to this PC.\n"
+                     "They only open on this computer.",
+    "Password Locked": "Your saved accounts are encrypted with your password.\n"
+                       "They open on any PC, but only with that password.",
+    "Unprotected": "Your saved accounts are stored without encryption.\n"
+                   "Anyone with access to this PC's files could read them.",
+}
 PC_USAGE_SETTING = "pc_usage_show"
 PC_RAM_WARN = 85.0
 PC_CPU_WARN = 90.0
@@ -2613,6 +2622,18 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         lay.addLayout(text_col)
         lay.addStretch(1)
 
+        # How the saved accounts are protected (Device Locked / Password Locked
+        # / Unprotected). Click to open Settings > Misc > Encryption.
+        self._enc_badge = QPushButton()
+        self._enc_badge.setObjectName("encBadge")
+        self._enc_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._enc_badge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._enc_badge.setIconSize(QSize(16, 16))
+        self._enc_badge.clicked.connect(self._open_encryption_settings)
+        self._enc_badge.hide()
+        lay.addWidget(self._enc_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch(1)
+
         buttons = QFrame()
         buttons.setObjectName("windowButtons")
         btn_lay = QHBoxLayout(buttons)
@@ -3138,13 +3159,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         header_row.addStretch(1)
 
-        # encryption label
-        self._enc_icon = QLabel()
-        self._enc_icon.setStyleSheet("background: transparent;")
-        header_row.addWidget(self._enc_icon)
-        self._enc_label = QLabel()
-        self._enc_label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        header_row.addWidget(self._enc_label)
+        # (The encryption badge lives in the title bar.)
 
         lay.addLayout(header_row)
         lay.addSpacing(2)
@@ -5249,6 +5264,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             for i, b in enumerate(cat_buttons):
                 b.setChecked(i == idx)
 
+        self._settings_switch_cat = _switch_cat
         for i, name in enumerate(CATEGORIES):
             btn = QPushButton(name)
             btn.setObjectName("navTab")
@@ -6190,7 +6206,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if self._chromium_status_result is not None:
             self._on_chromium_status(self._chromium_status_result)
 
-        f.addWidget(_sec("ENCRYPTION"))
+        self._enc_section_lbl = _sec("ENCRYPTION")
+        self._misc_settings_scroll = sa
+        f.addWidget(self._enc_section_lbl)
         _enc_btn = QPushButton("Switch Encryption Method")
         _enc_btn.setToolTip(
             "Change between hardware-based and password-based encryption.\n"
@@ -10413,17 +10431,34 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _update_encryption_badge(self):
         text, color = actions.get_encryption_status(self.manager)
         color = {"#90EE90": "#34D399", "#87CEEB": "#60A5FA", "#FFB6C1": "#F87171"}.get(color, color)
-        self._enc_label.setText(text)
-        self._enc_label.setStyleSheet(
-            f"color: {color}; background: transparent;"
+        badge = getattr(self, "_enc_badge", None)
+        if badge is None or not isValid(badge):
+            return
+        if not (text and color):
+            badge.hide()
+            return
+        badge.setText(f" {text}")
+        badge.setIcon(icons.make_icon(
+            "shield_check" if text != actions.ENCRYPTION_NONE_LABEL else "shield", color, size=16))
+        badge.setToolTip(ENCRYPTION_TIPS.get(text, "") + "\nClick to open the encryption settings.")
+        badge.setAccessibleName(f"Account protection: {text}")
+        badge.setStyleSheet(
+            f"QPushButton#encBadge {{ color: {color}; background: {color_themes.mix(BG, color, 0.10)};"
+            f" border: 1px solid {color_themes.mix(BG, color, 0.40)}; border-radius: 13px;"
+            f" padding: 4px 12px; font-size: 12px; font-weight: 600; }}"
+            f"QPushButton#encBadge:hover {{ background: {color_themes.mix(BG, color, 0.18)}; }}"
         )
-        enc_icon = getattr(self, "_enc_icon", None)
-        if enc_icon is not None and isValid(enc_icon):
-            if text and color:
-                enc_icon.setPixmap(icons.pixmap("shield_check", color, 18))
-                enc_icon.show()
-            else:
-                enc_icon.hide()
+        badge.show()
+
+    def _open_encryption_settings(self) -> None:
+        self._show_page(4)
+        switch = getattr(self, "_settings_switch_cat", None)
+        if callable(switch):
+            switch(SETTINGS_MISC_TAB)
+        section = getattr(self, "_enc_section_lbl", None)
+        area = getattr(self, "_misc_settings_scroll", None)
+        if section is not None and area is not None and isValid(section) and isValid(area):
+            QTimer.singleShot(0, lambda: isValid(area) and area.ensureWidgetVisible(section, 0, 40))
 
     def _on_place_id_changed(self, text: str):
         self._game_name_label.setText("")
