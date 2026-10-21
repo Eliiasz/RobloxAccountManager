@@ -56,6 +56,7 @@ def main(out_dir: str) -> int:
     manager.accounts = {name: dict(data) for name, data in SAMPLE_ACCOUNTS.items()}
     manager.get_encryption_method.return_value = "hardware"
     manager.get_secure_setting.return_value = ""
+    manager.secure_settings_unavailable = False
     manager.encryption_config.is_encryption_enabled.return_value = True
     manager.encryption_config.get_encryption_method.return_value = "hardware"
     with patch.object(ui.threading.Thread, "start"), \

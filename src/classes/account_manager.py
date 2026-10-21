@@ -292,6 +292,30 @@ class RobloxAccountManager:
             except OSError as exc:
                 print(f"[WARNING] Could not remove the temporary account file: {exc}")
 
+    @property
+    def secure_settings_unavailable(self) -> bool:
+        """Secure settings saved by an older version, locked to the PC they came from."""
+        return self._unavailable_secure_settings is not None
+
+    def reset_unavailable_secure_settings(self):
+        """Drop secure settings that can't be opened on this PC (backup password,
+        auto-backup key, WebSocket password) so they can be set again here.
+        Accounts are not touched."""
+        if self._unavailable_secure_settings is None:
+            return OperationResult.success()
+        previous = self._unavailable_secure_settings
+        try:
+            with self._accounts_lock:
+                self._unavailable_secure_settings = None
+                self.secure_settings = {}
+                self.save_accounts()
+            print("[INFO] Secure settings from another PC were reset on this PC.")
+            return OperationResult.success()
+        except Exception as e:
+            with self._accounts_lock:
+                self._unavailable_secure_settings = previous
+            return unexpected_result("Resetting secure settings", e)
+
     def get_secure_setting(self, key, default=""):
         """Read a sensitive setting stored alongside encrypted account data."""
         with self._accounts_lock:

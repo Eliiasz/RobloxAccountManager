@@ -2071,6 +2071,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._start_window_size_watcher()
         QTimer.singleShot(8000, self._start_auto_backup)
         QTimer.singleShot(900, self._show_whats_new)
+        QTimer.singleShot(1500, self._offer_secure_settings_reset)
 
         self._refresh_account_list()
         self._refresh_recent_games()
@@ -6386,6 +6387,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         _enc_btn.clicked.connect(self._on_sett_switch_encryption)
         f.addWidget(_enc_btn)
+        _move_lbl = QLabel(
+            "Moving to another PC: Device Locked accounts only open on this PC. Switch to Password "
+            "Locked (or use Export Accounts with a password) before copying the data folder; "
+            "Password Locked and Unprotected data opens on any PC."
+        )
+        _move_lbl.setWordWrap(True)
+        _move_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(_move_lbl)
 
         f.addWidget(_sec("DATA"))
         _export_btn = QPushButton("Export Accounts")
@@ -7647,6 +7656,25 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._show_update_dialog(latest)
         else:
             _show_info(self, "Up to Date", f"You are running the latest version (v{APP_VERSION}).")
+
+    def _offer_secure_settings_reset(self) -> None:
+        """Data copied from another PC: settings an older version locked to that PC."""
+        if not getattr(self.manager, "secure_settings_unavailable", False):
+            return
+        reply = QMessageBox.question(
+            self, "Settings from another PC",
+            "Your accounts opened fine, but a few saved settings (backup password, auto-backup key, "
+            "WebSocket password) were locked to the PC they came from by an older version, so they "
+            "can't be used here and backups can't be made.\n\n"
+            "Reset them on this PC? Your accounts are not touched. You can set a backup password "
+            "again in Settings → Misc.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            result = self.manager.reset_unavailable_secure_settings()
+            if not result:
+                self._show_operation_error(result)
 
     def _show_whats_new(self) -> None:
         """After an update: show what changed, once per version (offline, notes are built in)."""
@@ -13970,8 +13998,11 @@ def main(icon_path: str | None = None, *, smoke_test: bool = False) -> int:
         _show_error(
             None,
             "Hardware Encryption Error",
-            "The hardware-encrypted account data could not be opened on "
-            "this computer. The original file was not changed.\n\n"
+            "These accounts are Device Locked: they only open on the PC they were saved on. "
+            "The original file was not changed.\n\n"
+            "To move them: on that PC, use Export Accounts (with a password) and import the file "
+            "here, or switch that PC to Password Locked (Settings → Misc → Encryption) and copy "
+            "the data folder again.\n\n"
             "Error code: ACCOUNT_HARDWARE_DECRYPTION_FAILED\n\n"
             f"Details were saved to:\n{crash_path}",
         )
