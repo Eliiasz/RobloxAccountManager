@@ -138,29 +138,70 @@ class KeepSizeTests(unittest.TestCase):
         ws._fights.clear()
         ws._given_up.clear()
 
-    def test_grown_back_window_is_shrunk_again(self):
-        ws._kept[7] = (320, 240)
-        with patch.object(ws, "window_rect", return_value=(0, 0, 1020, 797)), \
+    def _keep(self, rect, now=1.0):
+        with patch.object(ws, "window_rect", return_value=rect), \
+                patch.dict("sys.modules", {"win32gui": type("G", (), {"IsIconic": staticmethod(lambda h: False)})}), \
                 patch.object(ws, "resize_window") as resize:
-            self.assertEqual(ws.keep_sizes(now=1.0), [7])
-        resize.assert_called_once_with(7, 320, 240, allow_smaller=True)
+            fixed = ws.keep_sizes(now=now)
+        return fixed, resize
 
-    def test_window_at_size_is_left_alone(self):
-        ws._kept[7] = (320, 240)
-        with patch.object(ws, "window_rect", return_value=(0, 0, 320, 240)), \
-                patch.object(ws, "resize_window") as resize:
-            self.assertEqual(ws.keep_sizes(now=1.0), [])
+    def test_grown_back_window_is_shrunk_again(self):
+        ws._kept[7] = (320, 240, None, None)
+        fixed, resize = self._keep((0, 0, 1020, 797))
+        self.assertEqual(fixed, [7])
+        resize.assert_called_once_with(7, 320, 240, None, None, allow_smaller=True, lock=True)
+
+    def test_moved_window_goes_back_to_its_grid_spot(self):
+        ws._kept[7] = (320, 240, 640, 0)
+        fixed, resize = self._keep((900, 300, 320, 240))
+        self.assertEqual(fixed, [7])
+        self.assertEqual(resize.call_args.args[:5], (7, 320, 240, 640, 0))
+
+    def test_window_in_place_is_left_alone(self):
+        ws._kept[7] = (320, 240, 640, 0)
+        fixed, resize = self._keep((641, 1, 320, 240))
+        self.assertEqual(fixed, [])
         resize.assert_not_called()
 
-    def test_gives_up_when_roblox_keeps_fighting(self):
-        ws._kept[7] = (320, 240)
+    def test_gives_up_when_it_keeps_changing_back(self):
+        ws._kept[7] = (320, 240, None, None)
         with patch.object(ws, "window_rect", return_value=(0, 0, 1020, 797)), \
+                patch.dict("sys.modules", {"win32gui": type("G", (), {"IsIconic": staticmethod(lambda h: False)})}), \
                 patch.object(ws, "resize_window") as resize:
             for second in range(ws._FIGHT_LIMIT + 1):
                 ws.keep_sizes(now=float(second))
         self.assertEqual(resize.call_count, ws._FIGHT_LIMIT)
         self.assertNotIn(7, ws._kept)
-        self.assertIn(7, ws._given_up)
+
+
+class GridTests(unittest.TestCase):
+    def test_fixed_size_grid_matches_the_settings_drawing(self):
+        choice = ws.Choice(ws.MODE_SIZE, (320, 240), (5, 4))
+        self.assertEqual(ws.grid_slots(choice, WORK), ((6, 4), (320, 240)))
+        self.assertEqual(ws.grid_position(choice, WORK, 0), (0, 0, 320, 240))
+        self.assertEqual(ws.grid_position(choice, WORK, 1), (320, 0, 320, 240))
+        self.assertEqual(ws.grid_position(choice, WORK, 6), (0, 240, 320, 240))
+
+    def test_extra_windows_start_a_shifted_layer(self):
+        choice = ws.Choice(ws.MODE_SIZE, (320, 240), (5, 4))
+        x, y, _w, _h = ws.grid_position(choice, WORK, 24)
+        self.assertEqual((x, y), (ws._LAYER_OFFSET, ws._LAYER_OFFSET))
+
+    def test_arrange_grid_places_first_opened_top_left_and_locks(self):
+        choice = ws.Choice(ws.MODE_SIZE, (320, 240), (5, 4), allow_smaller=True, lock=True)
+        with patch.object(ws, "primary_work_area", return_value=WORK), \
+                patch.object(ws, "resize_window", return_value=(320, 240)) as resize:
+            result = ws.arrange_grid(choice, windows=[11, 22])
+        self.assertEqual(result.resized, 2)
+        first = resize.call_args_list[0]
+        self.assertEqual(first.args[:5], (11, 320, 240, 0, 0))
+        self.assertTrue(first.kwargs["lock"])
+        self.assertEqual(resize.call_args_list[1].args[3:5], (320, 0))
+
+    def test_off_arranges_nothing(self):
+        with patch.object(ws, "resize_window") as resize:
+            ws.arrange_grid(ws.Choice(ws.MODE_OFF, (320, 240), (5, 4)), windows=[1])
+        resize.assert_not_called()
 
 
 class WatcherTests(unittest.TestCase):

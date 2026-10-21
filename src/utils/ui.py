@@ -9131,6 +9131,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 print("[INFO] No open Roblox window left to minimize")
             return True, 0
         if window_grid_mod.is_hotkey_message(message):
+            choice = window_size_mod.load_choice()
+            if choice.mode != window_size_mod.MODE_OFF:
+                # Arrange like the Window Size drawing, at that size, and lock them.
+                threading.Thread(target=window_size_mod.arrange_grid, args=(choice,),
+                                 daemon=True, name="WindowGridSized").start()
+                return True, 0
             result = window_grid_mod.tile_roblox_windows()
             if not result:
                 print(f"[Window Grid] {result.code}: {result.message}")
@@ -10003,6 +10009,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             "look cramped when tiny. While on, you can't drag-resize those windows by hand;\n"
             "set Window size to Off to give the border back.")
         f.addWidget(self._ws_unlock_chk)
+        self._ws_lock_chk = QCheckBox("Lock window size")
+        self._ws_lock_chk.setChecked(choice.lock)
+        self._ws_lock_chk.setToolTip(
+            "Hold every window the app sized at that size (and its Window Grid spot).\n"
+            "If Roblox or anything else changes it, it's put back within half a second.\n"
+            "Minimized windows are left alone.")
+        f.addWidget(self._ws_lock_chk)
 
         self._ws_preview = _WindowSizePreview()
         f.addWidget(self._ws_preview)
@@ -10043,7 +10056,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         for signal in (self._ws_mode_combo.currentIndexChanged, self._ws_size_combo.currentIndexChanged,
                        self._ws_layout_combo.currentIndexChanged, self._ws_w_spin.valueChanged,
-                       self._ws_h_spin.valueChanged, self._ws_unlock_chk.toggled):
+                       self._ws_h_spin.valueChanged, self._ws_unlock_chk.toggled,
+                       self._ws_lock_chk.toggled):
             signal.connect(self._on_window_size_changed)
         self._on_window_size_changed(apply=False)
 
@@ -10052,7 +10066,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         preset = self._ws_size_combo.currentData()
         size = tuple(preset) if preset else (self._ws_w_spin.value(), self._ws_h_spin.value())
         layout = tuple(self._ws_layout_combo.currentData() or window_size_mod.DEFAULT_LAYOUT)
-        return window_size_mod.Choice(mode, size, layout, self._ws_unlock_chk.isChecked())
+        return window_size_mod.Choice(mode, size, layout, self._ws_unlock_chk.isChecked(),
+                                      self._ws_lock_chk.isChecked())
 
     @staticmethod
     def _screen_work_area() -> tuple[int, int, int, int]:
@@ -10068,6 +10083,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         window_size_mod.save_choice(choice)
         mode = choice.mode
         self._ws_unlock_chk.setVisible(mode != window_size_mod.MODE_OFF)
+        self._ws_lock_chk.setVisible(mode != window_size_mod.MODE_OFF)
         self._grey_out_refused_sizes(choice)
         if apply:
             self._ws_apply_timer.start()  # also gives borders back when turned Off
@@ -10184,6 +10200,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             _SizeOutline.show_for(self, width, height)
             return
         hwnd = windows[0]
+        window_size_mod._kept.pop(hwnd, None)  # a locked window would jump straight back
         import win32gui
         try:
             placement = win32gui.GetWindowPlacement(hwnd)
@@ -10215,6 +10232,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             if choice.mode == window_size_mod.MODE_OFF:
                 return
             window_size_mod.save_choice(choice)
+            self._ws_apply_timer.start()  # size (and lock) every open window
         _PreviewKeepBar.ask(self, f"Previewing {actual[0]} × {actual[1]} on a Roblox window", _keep, _undo)
 
     def _start_window_size_watcher(self) -> None:
@@ -10224,8 +10242,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _build_window_grid_group(self, body: QVBoxLayout, S: dict) -> None:
         f = self._sheet_group(
             body, "Window Grid shortcut", "windows",
-            "Press this key anywhere to arrange every visible Roblox window into an equal grid "
-            "on the monitor under your cursor. Anti AFK goes through the windows in this order.",
+            "Press this key anywhere to arrange every visible Roblox window into a grid, first "
+            "opened top-left. With a Window Size set (Settings → Roblox), it uses that size and "
+            "layout and locks the windows there. Anti AFK goes through the windows in this order.",
         )
         self._sett_window_grid_chk = self._settings_checkbox(
             "window_grid_enabled", "Enable Window Grid Shortcut",

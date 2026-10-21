@@ -27,6 +27,7 @@ LAYOUT_SETTING = "roblox_window_layout"
 REFUSED_SETTING = "roblox_window_refused"   # smallest size Roblox actually kept
 UNLOCK_SETTING = "roblox_window_allow_smaller"  # experimental: lift Roblox's minimum size
 METHOD_SETTING = "roblox_window_method"   # resize method that worked in "Test resize"
+LOCK_SETTING = "roblox_window_lock"       # hold windows at their size (and grid spot)
 SWP_NOSENDCHANGING = 0x0400   # skip WM_WINDOWPOSCHANGING, where minimum sizes are applied
 METHODS = (
     ("normal", "Normal resize"),
@@ -60,6 +61,7 @@ class Choice:
     size: tuple[int, int]
     layout: tuple[int, int]
     allow_smaller: bool = False
+    lock: bool = True
 
 
 @dataclass
@@ -98,6 +100,7 @@ def load_choice() -> Choice:
         _pair(settings.get(SIZE_SETTING), DEFAULT_SIZE, MIN_SIDE, MAX_SIDE),
         _pair(settings.get(LAYOUT_SETTING), DEFAULT_LAYOUT, 1, 12),
         bool(settings.get(UNLOCK_SETTING, False)),
+        bool(settings.get(LOCK_SETTING, True)),
     )
 
 
@@ -106,6 +109,7 @@ def save_choice(choice: Choice) -> None:
     settings_store.save(SIZE_SETTING, list(choice.size))
     settings_store.save(LAYOUT_SETTING, list(choice.layout))
     settings_store.save(UNLOCK_SETTING, bool(choice.allow_smaller))
+    settings_store.save(LOCK_SETTING, bool(choice.lock))
 
 
 def refused_size() -> tuple[int, int] | None:
@@ -146,6 +150,31 @@ def target_size(choice: Choice, work) -> tuple[int, int]:
         width, height = fit_size(work, choice.layout)
         return width - _GAP, height - _GAP
     return choice.size
+
+
+_LAYER_OFFSET = 28   # extra windows beyond the grid start a new layer, shifted this much
+
+
+def grid_slots(choice: Choice, work) -> tuple[tuple[int, int], tuple[int, int]]:
+    """((columns, rows), (width, height)) of the grid the drawing in Settings shows."""
+    if choice.mode == MODE_FIT:
+        return choice.layout, target_size(choice, work)
+    cols, rows = how_many_fit(work, choice.size)
+    return (max(1, cols), max(1, rows)), choice.size
+
+
+def grid_position(choice: Choice, work, index: int) -> tuple[int, int, int, int]:
+    """(x, y, w, h) for window number `index` (0 = first opened), left to right,
+    row by row from the top-left; windows beyond the grid start another layer."""
+    (cols, rows), (width, height) = grid_slots(choice, work)
+    capacity = cols * rows
+    layer, slot = divmod(index, capacity)
+    if choice.mode == MODE_FIT:
+        x, y, w, h = slot_rect(work, choice.layout, slot)
+    else:
+        left, top, _r, _b = work
+        x, y, w, h = left + (slot % cols) * width, top + (slot // cols) * height, width, height
+    return x + layer * _LAYER_OFFSET, y + layer * _LAYER_OFFSET, w, h
 
 
 def free_slot(work, layout, taken_rects) -> int:
@@ -287,7 +316,8 @@ def current_method(allow_smaller: bool) -> str:
 
 
 def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: int | None = None,
-                  allow_smaller: bool = False, method: str | None = None) -> tuple[int, int]:
+                  allow_smaller: bool = False, method: str | None = None,
+                  lock: bool = False) -> tuple[int, int]:
     """Resize (and optionally move) one window; returns the size Roblox actually kept.
 
     Roblox sets a minimum size, which Windows applies while handling the
@@ -304,45 +334,83 @@ def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: i
         settings_store.save(REFUSED_SETTING, [actual_w, actual_h])
         _kept.pop(hwnd, None)
     else:
-        if allow_smaller:
-            _kept[hwnd] = (int(width), int(height))  # Roblox may grow it back; keep_sizes() fixes that
+        if lock:
+            # Hold it there: keep_sizes() puts it back if Roblox (or anything) changes it.
+            _kept[hwnd] = (int(width), int(height), None if x is None else int(x), None if y is None else int(y))
         minimum = refused_size()
         if minimum and below_minimum((actual_w, actual_h), minimum):
             settings_store.save(REFUSED_SETTING, None)  # it went smaller after all
     return actual_w, actual_h
 
 
-_kept: dict[int, tuple[int, int]] = {}         # windows shrunk below Roblox's minimum
+_kept: dict[int, tuple[int, int, int | None, int | None]] = {}   # locked windows: size (+ grid spot)
 _fights: dict[int, list[float]] = {}
 _given_up: set[int] = set()
+_MOVE_TOLERANCE = 8
 
 
-def keep_sizes(now: float | None = None) -> list[int]:
-    """Roblox puts its window back to its minimum when it is clicked. Shrink
-    those windows again; stop for a window Roblox keeps fighting over."""
+def release_locks() -> None:
+    _kept.clear()
+
+
+def keep_sizes(now: float | None = None, allow_smaller: bool = True) -> list[int]:
+    """Put locked windows back to their size (and grid spot) when they change,
+    e.g. Roblox growing a window back when it is clicked. Stops for a window
+    that keeps being changed back, instead of flickering forever."""
     now = time.monotonic() if now is None else now
     fixed = []
-    for hwnd, (width, height) in list(_kept.items()):
+    for hwnd, (width, height, x, y) in list(_kept.items()):
         try:
-            _l, _t, w, h = window_rect(hwnd)
+            left, top, w, h = window_rect(hwnd)
         except Exception:
             _kept.pop(hwnd, None)
             continue
-        if w <= width + _TOLERANCE and h <= height + _TOLERANCE:
+        moved = x is not None and (abs(left - x) > _MOVE_TOLERANCE or abs(top - y) > _MOVE_TOLERANCE)
+        if w <= width + _TOLERANCE and h <= height + _TOLERANCE and not moved:
             continue
+        try:
+            import win32gui
+            if win32gui.IsIconic(hwnd):
+                continue  # minimized on purpose (or by Anti AFK): leave it
+        except Exception:
+            pass
         recent = [t for t in _fights.get(hwnd, []) if now - t < _FIGHT_WINDOW] + [now]
         _fights[hwnd] = recent
         if len(recent) > _FIGHT_LIMIT:
             _kept.pop(hwnd, None)
             _given_up.add(hwnd)
-            print(f"[Window Size] Roblox keeps resizing a window back to {w} x {h}; stopped re-shrinking it.")
+            print(f"[Window Size] A Roblox window keeps changing back to {w} x {h}; stopped locking it.")
             continue
         try:
-            resize_window(hwnd, width, height, allow_smaller=True)
+            resize_window(hwnd, width, height, x, y, allow_smaller=allow_smaller, lock=True)
             fixed.append(hwnd)
         except Exception:
             _kept.pop(hwnd, None)
     return fixed
+
+
+def arrange_grid(choice: Choice | None = None, windows: list[int] | None = None) -> ApplyResult:
+    """Window Grid with a Window Size set: put every Roblox window in the grid the
+    Settings drawing shows, first opened top-left, and lock them there."""
+    choice = choice or load_choice()
+    result = ApplyResult(errors=[])
+    if choice.mode == MODE_OFF:
+        return result
+    windows = roblox_windows() if windows is None else windows
+    work = primary_work_area()
+    result.asked = grid_slots(choice, work)[1]
+    for index, hwnd in enumerate(windows):
+        x, y, w, h = grid_position(choice, work, index)
+        try:
+            actual = resize_window(hwnd, w, h, x, y, allow_smaller=choice.allow_smaller, lock=choice.lock)
+            if actual[0] > w + _TOLERANCE or actual[1] > h + _TOLERANCE:
+                result.refused = actual
+            else:
+                result.resized += 1
+        except Exception as exc:
+            result.errors.append(_explain(exc))
+    print(f"[Window Grid] {result.summary()}")
+    return result
 
 
 def test_methods(hwnd: int, width: int, height: int) -> list[tuple[str, tuple[int, int], bool]]:
@@ -394,6 +462,7 @@ def apply(choice: Choice, windows: list[int] | None = None, *, layout_all: bool 
     """Apply the choice. Fit mode lays the windows out in order, top-left first."""
     result = ApplyResult(errors=[])
     if choice.mode == MODE_OFF:
+        release_locks()
         restore_borders()
         return result
     windows = roblox_windows() if windows is None else windows
@@ -403,10 +472,10 @@ def apply(choice: Choice, windows: list[int] | None = None, *, layout_all: bool 
         try:
             if choice.mode == MODE_FIT and layout_all:
                 x, y, w, h = slot_rect(work, choice.layout, index)
-                actual = resize_window(hwnd, w, h, x, y, choice.allow_smaller)
+                actual = resize_window(hwnd, w, h, x, y, choice.allow_smaller, lock=choice.lock)
             else:
                 w, h = target_size(choice, work)
-                actual = resize_window(hwnd, w, h, allow_smaller=choice.allow_smaller)
+                actual = resize_window(hwnd, w, h, allow_smaller=choice.allow_smaller, lock=choice.lock)
             if actual[0] > w + _TOLERANCE or actual[1] > h + _TOLERANCE:
                 result.refused = actual
             else:
@@ -435,9 +504,9 @@ def place_new(choice: Choice, hwnd: int, others: list[int]) -> None:
             except Exception:
                 continue
         x, y, w, h = slot_rect(work, choice.layout, free_slot(work, choice.layout, taken))
-        resize_window(hwnd, w, h, x, y, choice.allow_smaller)
+        resize_window(hwnd, w, h, x, y, choice.allow_smaller, lock=choice.lock)
     elif choice.mode == MODE_SIZE:
-        resize_window(hwnd, *choice.size, allow_smaller=choice.allow_smaller)
+        resize_window(hwnd, *choice.size, allow_smaller=choice.allow_smaller, lock=choice.lock)
 
 
 class WindowSizeWatcher:
@@ -472,13 +541,12 @@ class WindowSizeWatcher:
 
     def tick(self, now: float | None = None) -> list[int]:
         choice = load_choice()
-        if choice.mode == MODE_OFF:
+        if choice.mode == MODE_OFF or not choice.lock:
             _kept.clear()
-            return []
-        if choice.allow_smaller:
-            keep_sizes(now)
+            if choice.mode == MODE_OFF:
+                return []
         else:
-            _kept.clear()
+            keep_sizes(now, allow_smaller=choice.allow_smaller)
         now = time.monotonic() if now is None else now
         windows = roblox_windows()
         live = set(windows)
