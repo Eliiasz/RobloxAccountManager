@@ -273,7 +273,14 @@ def pause_all(seconds: float = KILL_ALL_PAUSE_SECONDS) -> None:
 
 
 def paused_seconds_left() -> int:
-    return max(0, int(round(_paused_until - time.monotonic())))
+    global _paused_until
+    if not _paused_until:
+        return 0
+    left = _paused_until - time.monotonic()
+    if left <= 0:
+        _paused_until = 0.0
+        return 0
+    return max(1, int(round(left)))
 
 
 class AutoRejoinWorker:
