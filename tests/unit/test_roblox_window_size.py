@@ -76,6 +76,62 @@ class ApplyResultTests(unittest.TestCase):
         self.assertFalse(ws.below_minimum((320, 240), None))
 
 
+class LaunchSizeTests(unittest.TestCase):
+    def test_start_size_is_written_before_launch(self):
+        values = ws.launch_values(ws.Choice(ws.MODE_SIZE, (384, 270), (5, 4)), WORK)
+        self.assertEqual(values, {"StartScreenSize.X": "384", "StartScreenSize.Y": "270", "StartMaximized": "false"})
+        self.assertEqual(ws.launch_values(ws.Choice(ws.MODE_OFF, (384, 270), (5, 4)), WORK), {})
+
+    def test_missing_keys_are_reported(self):
+        from classes.operation_result import OperationResult
+        from features import roblox_settings
+        ok = OperationResult.success(data={"changed": {}, "missing": ["StartScreenSize.X", "StartScreenSize.Y"]})
+        with patch.object(ws, "primary_work_area", return_value=WORK), \
+                patch.object(roblox_settings, "apply_values", return_value=ok):
+            note = ws.write_launch_size(ws.Choice(ws.MODE_SIZE, (384, 270), (5, 4)))
+        self.assertIn("no start size", note)
+
+    def test_apply_values_only_touches_existing_differing_keys(self):
+        from classes.operation_result import OperationResult
+        from features import roblox_settings
+        loaded = OperationResult.success(data={"file_hash": "h", "settings": [
+            {"key": "StartScreenSize.X", "value": "1020"}, {"key": "StartScreenSize.Y", "value": "270"}]})
+        with patch.object(roblox_settings, "load_settings", return_value=loaded), \
+                patch.object(roblox_settings, "apply_settings", return_value=OperationResult.success()) as write:
+            result = roblox_settings.apply_values(
+                {"StartScreenSize.X": "384", "StartScreenSize.Y": "270", "StartMaximized": "false"})
+        self.assertEqual(write.call_args.args[0], {"StartScreenSize.X": "384"})
+        self.assertEqual(result.data["missing"], ["StartMaximized"])
+
+
+class MethodTests(unittest.TestCase):
+    def test_test_resize_finds_and_remembers_the_working_method(self):
+        sizes = {"normal": (1020, 797), "no_clamp": (320, 240)}
+        state = {}
+        saved = {}
+
+        def fake_resize(hwnd, method, w, h, x, y):
+            state["now"] = sizes.get(method, (1020, 797))
+
+        fake_gui = type("G", (), {"GetWindowPlacement": staticmethod(lambda h: "p"),
+                                  "SetWindowPlacement": staticmethod(lambda h, p: None)})
+        with patch.dict("sys.modules", {"win32gui": fake_gui}), \
+                patch.object(ws, "_do_resize", side_effect=fake_resize), \
+                patch.object(ws, "_set_resize_border"), \
+                patch.object(ws, "window_rect", side_effect=lambda h: (0, 0, *state["now"])), \
+                patch.object(ws.settings_store, "save", side_effect=lambda k, v: saved.__setitem__(k, v)):
+            results = ws.test_methods(1, 320, 240)
+        self.assertEqual([m for m, _s, ok in results if ok], ["no_clamp"])
+        self.assertEqual(saved[ws.METHOD_SETTING], "no_clamp")
+
+    def test_method_choice(self):
+        self.assertEqual(ws.current_method(False), "normal")
+        with patch.object(ws.settings_store, "get", return_value="move_window"):
+            self.assertEqual(ws.current_method(True), "move_window")
+        with patch.object(ws.settings_store, "get", return_value=""):
+            self.assertEqual(ws.current_method(True), "no_border_no_clamp")
+
+
 class WatcherTests(unittest.TestCase):
     def test_new_windows_are_resized_once_after_settling(self):
         watcher = ws.WindowSizeWatcher()

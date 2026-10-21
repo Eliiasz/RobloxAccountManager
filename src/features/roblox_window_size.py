@@ -26,6 +26,15 @@ SIZE_SETTING = "roblox_window_size"
 LAYOUT_SETTING = "roblox_window_layout"
 REFUSED_SETTING = "roblox_window_refused"   # smallest size Roblox actually kept
 UNLOCK_SETTING = "roblox_window_allow_smaller"  # experimental: lift Roblox's minimum size
+METHOD_SETTING = "roblox_window_method"   # resize method that worked in "Test resize"
+SWP_NOSENDCHANGING = 0x0400   # skip WM_WINDOWPOSCHANGING, where minimum sizes are applied
+METHODS = (
+    ("normal", "Normal resize"),
+    ("no_clamp", "Resize without the size check"),
+    ("no_border", "Resize with the border removed"),
+    ("no_border_no_clamp", "Border removed + no size check"),
+    ("move_window", "Classic move-window call"),
+)
 
 MODE_OFF, MODE_SIZE, MODE_FIT = "off", "size", "fit"
 PRESET_SIZES = (
@@ -147,6 +156,40 @@ def free_slot(work, layout, taken_rects) -> int:
     return len(list(taken_rects)) % max(1, cols * rows)
 
 
+# Opening at the size ---------------------------------------------------------
+# Roblox reopens at the window size saved in its settings file. Writing the
+# chosen size there before each launch makes new windows open at that size
+# themselves, instead of being resized afterwards.
+START_SIZE_KEYS = ("StartScreenSize.X", "StartScreenSize.Y")
+START_MAXIMIZED_KEY = "StartMaximized"
+
+
+def launch_values(choice: Choice, work) -> dict[str, str]:
+    if choice.mode == MODE_OFF:
+        return {}
+    width, height = target_size(choice, work)
+    return {START_SIZE_KEYS[0]: str(width), START_SIZE_KEYS[1]: str(height), START_MAXIMIZED_KEY: "false"}
+
+
+def write_launch_size(choice: Choice | None = None) -> str:
+    """Before a launch: put the chosen size in Roblox's settings file. Returns a note."""
+    choice = choice or load_choice()
+    if choice.mode == MODE_OFF:
+        return ""
+    try:
+        import features.roblox_settings as roblox_settings
+        work = primary_work_area()
+        result = roblox_settings.apply_values(launch_values(choice, work))
+    except Exception as exc:
+        return f"could not write the start size ({exc})"
+    if not result:
+        return f"could not write the start size ({result.message})"
+    missing = (result.data or {}).get("missing") or []
+    if set(START_SIZE_KEYS) & set(missing):
+        return "Roblox's settings file has no start size yet (open and close Roblox once)"
+    return ""
+
+
 # Windows side ----------------------------------------------------------------
 
 def primary_work_area() -> tuple[int, int, int, int]:
@@ -213,26 +256,47 @@ def restore_borders() -> int:
     return restored
 
 
+def _do_resize(hwnd: int, method: str, width: int, height: int, x: int | None, y: int | None) -> None:
+    import win32con
+    import win32gui
+    if method in ("no_border", "no_border_no_clamp"):
+        _set_resize_border(hwnd, False)
+    elif hwnd in _unlocked:
+        _set_resize_border(hwnd, True)
+    if method == "move_window":
+        if x is None or y is None:
+            x, y, _w, _h = window_rect(hwnd)
+        win32gui.MoveWindow(hwnd, int(x), int(y), int(width), int(height), True)
+        return
+    flags = win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
+    if method in ("no_clamp", "no_border_no_clamp"):
+        flags |= SWP_NOSENDCHANGING
+    if x is None or y is None:
+        flags |= win32con.SWP_NOMOVE
+        x = y = 0
+    win32gui.SetWindowPos(hwnd, 0, int(x), int(y), int(width), int(height), flags)
+
+
+def current_method(allow_smaller: bool) -> str:
+    if not allow_smaller:
+        return "normal"
+    saved = str(settings_store.get(METHOD_SETTING, "") or "")
+    return saved if saved in dict(METHODS) else "no_border_no_clamp"
+
+
 def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: int | None = None,
-                  allow_smaller: bool = False) -> tuple[int, int]:
+                  allow_smaller: bool = False, method: str | None = None) -> tuple[int, int]:
     """Resize (and optionally move) one window; returns the size Roblox actually kept.
 
-    Windows applies a program's minimum size only to windows with a resize
-    border; allow_smaller removes that border first (experimental).
+    Roblox sets a minimum size, which Windows applies while handling the
+    resize. allow_smaller uses the method found by "Test resize" (or skips
+    that check and removes the resize border) to go below it (experimental).
     """
     import win32con
     import win32gui
     if win32gui.IsIconic(hwnd) or _is_maximized(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-    if allow_smaller:
-        _set_resize_border(hwnd, False)
-    elif hwnd in _unlocked:
-        _set_resize_border(hwnd, True)
-    flags = win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
-    if x is None or y is None:
-        flags |= win32con.SWP_NOMOVE
-        x = y = 0
-    win32gui.SetWindowPos(hwnd, 0, int(x), int(y), int(width), int(height), flags)
+    _do_resize(hwnd, method or current_method(allow_smaller), width, height, x, y)
     _l, _t, actual_w, actual_h = window_rect(hwnd)
     if actual_w > width + _TOLERANCE or actual_h > height + _TOLERANCE:
         settings_store.save(REFUSED_SETTING, [actual_w, actual_h])
@@ -241,6 +305,42 @@ def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: i
         if minimum and below_minimum((actual_w, actual_h), minimum):
             settings_store.save(REFUSED_SETTING, None)  # it went smaller after all
     return actual_w, actual_h
+
+
+def test_methods(hwnd: int, width: int, height: int) -> list[tuple[str, tuple[int, int], bool]]:
+    """Try every resize method on one window, putting it back after each.
+
+    Returns [(method, size kept, worked)] and remembers the first that worked.
+    """
+    import win32gui
+    placement = win32gui.GetWindowPlacement(hwnd)
+    results = []
+    try:
+        for method, _label in METHODS:
+            try:
+                _do_resize(hwnd, method, width, height, None, None)
+                actual = window_rect(hwnd)[2:]
+            except Exception as exc:
+                print(f"[Window Size] Test {method}: {exc}")
+                actual = (0, 0)
+            worked = bool(actual[0]) and actual[0] <= width + _TOLERANCE and actual[1] <= height + _TOLERANCE
+            results.append((method, tuple(actual), worked))
+            try:
+                _set_resize_border(hwnd, True)
+                win32gui.SetWindowPlacement(hwnd, placement)
+            except Exception:
+                pass
+    finally:
+        try:
+            win32gui.SetWindowPlacement(hwnd, placement)
+        except Exception:
+            pass
+    best = next((method for method, _size, ok in results if ok), "")
+    if best:
+        settings_store.save(METHOD_SETTING, best)
+    print("[Window Size] Test resize: " + ", ".join(
+        f"{m} {'OK' if ok else 'kept'} {w}x{h}" for m, (w, h), ok in results))
+    return results
 
 
 def _is_maximized(hwnd: int) -> bool:

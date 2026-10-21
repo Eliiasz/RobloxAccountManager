@@ -359,6 +359,7 @@ class _ActionComboBox(QComboBox):
 class _Bridge(QObject):
     account_added = Signal(object) # OperationResult from add-account worker
     window_size_done = Signal(str) # result line for Settings > Roblox > Window Size
+    window_size_test_done = Signal(str, bool) # (report, a method worked)
     account_creator_done = Signal(bool, str, object) # (success, summary, report dict or None)
     account_creator_progress = Signal(int, int, int) # (created, finished, requested)
     backup_done = Signal(object) # OperationResult from "Backup now"
@@ -7190,6 +7191,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         if result is not None and not result:
             return result
         settings = actions.load_ui_settings()
+        note = window_size_mod.write_launch_size()
+        if note:
+            print(f"[Window Size] {note}")
         if settings.get("perf_apply_on_launch", True) and roblox_settings_mod.performance_values(settings):
             perf = roblox_settings_mod.apply_performance(settings)
             if not perf:
@@ -9993,8 +9997,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._ws_preview_btn.clicked.connect(self._on_window_size_preview)
         self._ws_apply_btn = QPushButton("Apply to open windows now")
         self._ws_apply_btn.clicked.connect(self._on_window_size_apply)
+        self._ws_test_btn = QPushButton("Test resize")
+        self._ws_test_btn.setToolTip(
+            "Tries every way of resizing on one open Roblox window (it's put back after each)\n"
+            "and tells you which one Roblox accepts. If one works, the app uses it from then on.")
+        self._ws_test_btn.clicked.connect(self._on_window_size_test)
         buttons.addWidget(self._ws_preview_btn)
         buttons.addWidget(self._ws_apply_btn)
+        buttons.addWidget(self._ws_test_btn)
         buttons.addStretch(1)
         f.addLayout(buttons)
         self._ws_result_lbl = QLabel("")
@@ -10002,6 +10012,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._ws_result_lbl.setStyleSheet(f"color: {ACCENT_TEXT}; font-size: 11px;")
         f.addWidget(self._ws_result_lbl)
         self._bridge.window_size_done.connect(self._on_window_size_done)
+        self._bridge.window_size_test_done.connect(self._on_window_size_test_done)
         # Changing the size applies it to open windows after a short pause.
         self._ws_apply_timer = QTimer(self)
         self._ws_apply_timer.setSingleShot(True)
@@ -10061,6 +10072,43 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         enabled = mode != window_size_mod.MODE_OFF
         self._ws_preview_btn.setEnabled(enabled)
         self._ws_apply_btn.setEnabled(enabled)
+        self._ws_test_btn.setEnabled(enabled)
+
+    def _on_window_size_test(self) -> None:
+        choice = self._window_size_choice()
+        width, height = window_size_mod.target_size(choice, self._screen_work_area())
+        self._ws_test_btn.setEnabled(False)
+        self._ws_result_lbl.setText(f"Testing {width} × {height} on one Roblox window…")
+
+        def _worker():
+            try:
+                windows = window_size_mod.roblox_windows()
+                if not windows:
+                    report, worked = "Open one Roblox window first, then press Test resize.", False
+                else:
+                    results = window_size_mod.test_methods(windows[0], width, height)
+                    labels = dict(window_size_mod.METHODS)
+                    lines = [f"{'✓' if ok else '✗'} {labels[m]}: {w} × {h}" for m, (w, h), ok in results]
+                    worked = any(ok for _m, _s, ok in results)
+                    head = ("Found a way that works. The experimental option is now on and uses it."
+                            if worked else
+                            "Roblox refused every method: it won't go below its minimum on this PC.")
+                    report = head + "\n" + "\n".join(lines)
+            except Exception as exc:
+                report, worked = f"Test failed: {exc}", False
+            try:
+                self._bridge.window_size_test_done.emit(report, worked)
+            except RuntimeError:
+                pass
+        threading.Thread(target=_worker, daemon=True, name="WindowSizeTest").start()
+
+    def _on_window_size_test_done(self, report: str, worked: bool) -> None:
+        if not isValid(self._ws_result_lbl):
+            return
+        self._ws_test_btn.setEnabled(True)
+        if worked and not self._ws_unlock_chk.isChecked():
+            self._ws_unlock_chk.setChecked(True)  # applies the size with the working method
+        self._ws_result_lbl.setText(report)
 
     def _grey_out_refused_sizes(self, choice) -> None:
         """Sizes Roblox refused here are greyed out, unless the experimental option is on."""

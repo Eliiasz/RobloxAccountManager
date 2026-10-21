@@ -1264,6 +1264,29 @@ def performance_values(settings: dict) -> dict[str, str]:
     return wanted
 
 
+def apply_values(wanted: dict[str, str]) -> OperationResult:
+    """Write a few keys into Roblox's settings file, only the ones it already has
+    and only when they differ. data: {"changed": {...}, "missing": [...]}."""
+    if not wanted:
+        return OperationResult.success("Nothing to apply.", data={"changed": {}, "missing": []})
+    loaded = load_settings()
+    if not loaded:
+        return loaded
+    current = {
+        str(record.get("key")): str(record.get("value", ""))
+        for record in (loaded.data or {}).get("settings", [])
+        if isinstance(record, dict)
+    }
+    missing = [key for key in wanted if key not in current]
+    changes = {key: value for key, value in wanted.items() if key in current and current[key] != value}
+    if not changes:
+        return OperationResult.success("Already applied.", data={"changed": {}, "missing": missing})
+    result = apply_settings(changes, expected_hash=loaded.data.get("file_hash", ""), framerate_locked=None)
+    if not result:
+        return result
+    return OperationResult.success("Applied.", data={"changed": changes, "missing": missing})
+
+
 def apply_performance(settings: dict) -> OperationResult:
     """Write the Performance FPS cap / graphics level into Roblox's settings file.
 
