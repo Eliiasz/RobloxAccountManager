@@ -358,6 +358,7 @@ class _ActionComboBox(QComboBox):
 # Thread to Qt signal bridge
 class _Bridge(QObject):
     account_added = Signal(object) # OperationResult from add-account worker
+    window_size_done = Signal(str) # result line for Settings > Roblox > Window Size
     account_creator_done = Signal(bool, str, object) # (success, summary, report dict or None)
     account_creator_progress = Signal(int, int, int) # (created, finished, requested)
     backup_done = Signal(object) # OperationResult from "Backup now"
@@ -7765,15 +7766,28 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             except RuntimeError:
                 pass
             if success:
-                dl_btn.setText("Downloaded. Closing...")
+                # Wait for the user: OK closes the app, the update installs and
+                # the new version opens (closing the window does the same).
+                dl_btn.setText("OK")
                 dl_btn.setStyleSheet(
-                    f"QPushButton {{ background: #1E4D1E; color: {TEXT}; "
+                    f"QPushButton {{ background: #1E4D1E; color: {TEXT}; font-weight: 700; "
                     f"border: 1px solid #2E6D2E; border-radius: 4px; }}"
+                    f"QPushButton:hover {{ background: #286128; }}"
                 )
-                status_lbl.setText("The app will close and install the update.")
-                dlg.setEnabled(False)
-                dlg._allow_close = True
-                QTimer.singleShot(1500, self._quit_for_update)
+                status_lbl.setText(f"Update ready. Click OK to restart into v{latest_version}.")
+                try:
+                    dl_btn.clicked.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+
+                def _restart() -> None:
+                    dl_btn.setEnabled(False)
+                    dl_btn.setText("Restarting...")
+                    dlg._allow_close = True
+                    QTimer.singleShot(200, self._quit_for_update)
+                dl_btn.clicked.connect(_restart)
+                dl_btn.setEnabled(True)
+                dl_btn.setFocus()
             else:
                 _set_buttons_enabled(True)
                 dl_btn.setText("Retry")
@@ -9954,6 +9968,16 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._ws_layout_combo.setCurrentIndex(max(0, index))
         self._ws_layout_row = _row("Layout", self._ws_layout_combo)
 
+        self._ws_unlock_chk = QCheckBox("Allow smaller than Roblox's minimum (experimental)")
+        self._ws_unlock_chk.setChecked(choice.allow_smaller)
+        self._ws_unlock_chk.setToolTip(
+            "Roblox won't let its windows get smaller than about 1020 × 797 on newer versions.\n"
+            "Windows only enforces that limit on windows with a resize border, so this removes\n"
+            "the border before resizing. Roblox may still push the size back, and its menus may\n"
+            "look cramped when tiny. While on, you can't drag-resize those windows by hand;\n"
+            "set Window size to Off to give the border back.")
+        f.addWidget(self._ws_unlock_chk)
+
         self._ws_preview = _WindowSizePreview()
         f.addWidget(self._ws_preview)
         self._ws_info_lbl = QLabel()
@@ -9973,19 +9997,29 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         buttons.addWidget(self._ws_apply_btn)
         buttons.addStretch(1)
         f.addLayout(buttons)
+        self._ws_result_lbl = QLabel("")
+        self._ws_result_lbl.setWordWrap(True)
+        self._ws_result_lbl.setStyleSheet(f"color: {ACCENT_TEXT}; font-size: 11px;")
+        f.addWidget(self._ws_result_lbl)
+        self._bridge.window_size_done.connect(self._on_window_size_done)
+        # Changing the size applies it to open windows after a short pause.
+        self._ws_apply_timer = QTimer(self)
+        self._ws_apply_timer.setSingleShot(True)
+        self._ws_apply_timer.setInterval(800)
+        self._ws_apply_timer.timeout.connect(self._on_window_size_apply)
 
         for signal in (self._ws_mode_combo.currentIndexChanged, self._ws_size_combo.currentIndexChanged,
                        self._ws_layout_combo.currentIndexChanged, self._ws_w_spin.valueChanged,
-                       self._ws_h_spin.valueChanged):
+                       self._ws_h_spin.valueChanged, self._ws_unlock_chk.toggled):
             signal.connect(self._on_window_size_changed)
-        self._on_window_size_changed()
+        self._on_window_size_changed(apply=False)
 
     def _window_size_choice(self):
         mode = self._ws_mode_combo.currentData() or window_size_mod.MODE_OFF
         preset = self._ws_size_combo.currentData()
         size = tuple(preset) if preset else (self._ws_w_spin.value(), self._ws_h_spin.value())
         layout = tuple(self._ws_layout_combo.currentData() or window_size_mod.DEFAULT_LAYOUT)
-        return window_size_mod.Choice(mode, size, layout)
+        return window_size_mod.Choice(mode, size, layout, self._ws_unlock_chk.isChecked())
 
     @staticmethod
     def _screen_work_area() -> tuple[int, int, int, int]:
@@ -9996,10 +10030,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         return (round(geo.x() * ratio), round(geo.y() * ratio),
                 round((geo.x() + geo.width()) * ratio), round((geo.y() + geo.height()) * ratio))
 
-    def _on_window_size_changed(self, *_args) -> None:
+    def _on_window_size_changed(self, *_args, apply: bool = True) -> None:
         choice = self._window_size_choice()
         window_size_mod.save_choice(choice)
         mode = choice.mode
+        self._ws_unlock_chk.setVisible(mode != window_size_mod.MODE_OFF)
+        self._grey_out_refused_sizes(choice)
+        if apply:
+            self._ws_apply_timer.start()  # also gives borders back when turned Off
         self._ws_size_row.setVisible(mode == window_size_mod.MODE_SIZE)
         self._ws_custom_row.setVisible(mode == window_size_mod.MODE_SIZE and self._ws_size_combo.currentData() is None)
         self._ws_layout_row.setVisible(mode == window_size_mod.MODE_FIT)
@@ -10014,21 +10052,55 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             text = "Off: Roblox picks its own window size."
         else:
             text = f"{cols} × {rows} = {cols * rows} windows fit on your screen · {size[0]} × {size[1]} each"
-        refused = actions.get_ui_setting(window_size_mod.REFUSED_SETTING)
-        if mode != window_size_mod.MODE_OFF and refused and (size[0] < refused[0] - 4 or size[1] < refused[1] - 4):
-            text += f"\nRoblox wouldn't go smaller than {refused[0]} × {refused[1]} on this PC."
+        refused = window_size_mod.refused_size()
+        if mode != window_size_mod.MODE_OFF and window_size_mod.below_minimum(size, refused):
+            text += f"\nRoblox wouldn't go smaller than {refused[0]} × {refused[1]} on this PC"
+            text += " (trying anyway: experimental option on)." if choice.allow_smaller else \
+                ". Try the experimental option above."
         self._ws_info_lbl.setText(text)
         enabled = mode != window_size_mod.MODE_OFF
         self._ws_preview_btn.setEnabled(enabled)
         self._ws_apply_btn.setEnabled(enabled)
 
+    def _grey_out_refused_sizes(self, choice) -> None:
+        """Sizes Roblox refused here are greyed out, unless the experimental option is on."""
+        refused = None if choice.allow_smaller else window_size_mod.refused_size()
+        model = self._ws_size_combo.model()
+        for row in range(self._ws_size_combo.count()):
+            data = self._ws_size_combo.itemData(row)
+            item = model.item(row) if hasattr(model, "item") else None
+            if item is None:
+                continue
+            item.setEnabled(not (data and window_size_mod.below_minimum(tuple(data), refused)))
+        work = self._screen_work_area()
+        layout_model = self._ws_layout_combo.model()
+        for row in range(self._ws_layout_combo.count()):
+            cols, rows = self._ws_layout_combo.itemData(row)
+            item = layout_model.item(row) if hasattr(layout_model, "item") else None
+            if item is not None:
+                item.setEnabled(not window_size_mod.below_minimum(
+                    window_size_mod.fit_size(work, (cols, rows)), refused))
+
     def _on_window_size_apply(self) -> None:
         choice = self._window_size_choice()
+        if choice.mode != window_size_mod.MODE_OFF:
+            self._ws_result_lbl.setText("Resizing…")
 
         def _worker():
-            count = window_size_mod.apply(choice)
-            print(f"[Window Size] Resized {count} Roblox window(s)")
+            result = window_size_mod.apply(choice)
+            text = "" if choice.mode == window_size_mod.MODE_OFF else result.summary()
+            try:
+                self._bridge.window_size_done.emit(text)
+            except RuntimeError:
+                pass
         threading.Thread(target=_worker, daemon=True, name="WindowSizeApply").start()
+
+    def _on_window_size_done(self, text: str) -> None:
+        label = getattr(self, "_ws_result_lbl", None)
+        if label is not None and isValid(label):
+            label.setText(text)
+        if hasattr(self, "_ws_mode_combo") and isValid(self._ws_mode_combo):
+            self._on_window_size_changed(apply=False)  # refresh the "won't go smaller" note
 
     def _on_window_size_preview(self) -> None:
         choice = self._window_size_choice()
@@ -10048,13 +10120,20 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             left, top, right, bottom = work
             x = left + max(0, (right - left - width) // 2)
             y = top + max(0, (bottom - top - height) // 2)
-            actual = window_size_mod.resize_window(hwnd, width, height, x, y)
-            win32gui.SetForegroundWindow(hwnd)
+            actual = window_size_mod.resize_window(hwnd, width, height, x, y, choice.allow_smaller)
+            try:
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
         except Exception as exc:
             print(f"[Window Size] Preview failed: {exc}")
             _SizeOutline.show_for(self, width, height)
             return
-        self._on_window_size_changed()  # shows a "won't go smaller" note if Roblox refused
+        refused = actual[0] > width + 4 or actual[1] > height + 4
+        self._ws_result_lbl.setText(
+            f"Roblox kept {actual[0]} × {actual[1]}: it won't go smaller than that on this PC."
+            if refused else f"Preview: {actual[0]} × {actual[1]}.")
+        self._on_window_size_changed(apply=False)
 
         def _undo():
             try:

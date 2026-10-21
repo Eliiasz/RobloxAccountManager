@@ -25,6 +25,7 @@ MODE_SETTING = "roblox_window_mode"
 SIZE_SETTING = "roblox_window_size"
 LAYOUT_SETTING = "roblox_window_layout"
 REFUSED_SETTING = "roblox_window_refused"   # smallest size Roblox actually kept
+UNLOCK_SETTING = "roblox_window_allow_smaller"  # experimental: lift Roblox's minimum size
 
 MODE_OFF, MODE_SIZE, MODE_FIT = "off", "size", "fit"
 PRESET_SIZES = (
@@ -47,6 +48,25 @@ class Choice:
     mode: str
     size: tuple[int, int]
     layout: tuple[int, int]
+    allow_smaller: bool = False
+
+
+@dataclass
+class ApplyResult:
+    asked: tuple[int, int] = (0, 0)
+    resized: int = 0
+    refused: tuple[int, int] | None = None   # what Roblox kept when it wouldn't shrink
+    errors: list[str] | None = None
+
+    def summary(self) -> str:
+        if self.errors and not self.resized and not self.refused:
+            return f"Couldn't resize: {self.errors[0]}"
+        if self.refused:
+            return (f"Roblox kept {self.refused[0]} × {self.refused[1]}: it won't go smaller than that "
+                    "on this PC.")
+        if not self.resized:
+            return "No open Roblox windows to resize."
+        return f"Resized {self.resized} window{'s' if self.resized != 1 else ''} to {self.asked[0]} × {self.asked[1]}."
 
 
 def _pair(value, default: tuple[int, int], low: int, high: int) -> tuple[int, int]:
@@ -66,6 +86,7 @@ def load_choice() -> Choice:
         mode,
         _pair(settings.get(SIZE_SETTING), DEFAULT_SIZE, MIN_SIDE, MAX_SIDE),
         _pair(settings.get(LAYOUT_SETTING), DEFAULT_LAYOUT, 1, 12),
+        bool(settings.get(UNLOCK_SETTING, False)),
     )
 
 
@@ -73,6 +94,19 @@ def save_choice(choice: Choice) -> None:
     settings_store.save(MODE_SETTING, choice.mode)
     settings_store.save(SIZE_SETTING, list(choice.size))
     settings_store.save(LAYOUT_SETTING, list(choice.layout))
+    settings_store.save(UNLOCK_SETTING, bool(choice.allow_smaller))
+
+
+def refused_size() -> tuple[int, int] | None:
+    value = settings_store.get(REFUSED_SETTING)
+    try:
+        return int(value[0]), int(value[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def below_minimum(size: tuple[int, int], minimum: tuple[int, int] | None) -> bool:
+    return bool(minimum) and (size[0] < minimum[0] - _TOLERANCE or size[1] < minimum[1] - _TOLERANCE)
 
 
 def fit_size(work: tuple[int, int, int, int], layout: tuple[int, int]) -> tuple[int, int]:
@@ -148,12 +182,52 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     return left, top, right - left, bottom - top
 
 
-def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: int | None = None) -> tuple[int, int]:
-    """Resize (and optionally move) one window; returns the size Roblox actually kept."""
+_unlocked: set[int] = set()   # windows whose resize border this app removed
+
+
+def _set_resize_border(hwnd: int, on: bool) -> None:
+    import win32con
+    import win32gui
+    style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+    wanted = style | win32con.WS_THICKFRAME if on else style & ~win32con.WS_THICKFRAME
+    if wanted != style:
+        win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, wanted)
+        win32gui.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOZORDER
+                              | win32con.SWP_NOACTIVATE | win32con.SWP_FRAMECHANGED)
+    if on:
+        _unlocked.discard(hwnd)
+    else:
+        _unlocked.add(hwnd)
+
+
+def restore_borders() -> int:
+    """Give back the resize border to every window the experimental option changed."""
+    restored = 0
+    for hwnd in list(_unlocked):
+        try:
+            _set_resize_border(hwnd, True)
+            restored += 1
+        except Exception:
+            _unlocked.discard(hwnd)
+    return restored
+
+
+def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: int | None = None,
+                  allow_smaller: bool = False) -> tuple[int, int]:
+    """Resize (and optionally move) one window; returns the size Roblox actually kept.
+
+    Windows applies a program's minimum size only to windows with a resize
+    border; allow_smaller removes that border first (experimental).
+    """
     import win32con
     import win32gui
     if win32gui.IsIconic(hwnd) or _is_maximized(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    if allow_smaller:
+        _set_resize_border(hwnd, False)
+    elif hwnd in _unlocked:
+        _set_resize_border(hwnd, True)
     flags = win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
     if x is None or y is None:
         flags |= win32con.SWP_NOMOVE
@@ -162,8 +236,10 @@ def resize_window(hwnd: int, width: int, height: int, x: int | None = None, y: i
     _l, _t, actual_w, actual_h = window_rect(hwnd)
     if actual_w > width + _TOLERANCE or actual_h > height + _TOLERANCE:
         settings_store.save(REFUSED_SETTING, [actual_w, actual_h])
-        print(f"[Window Size] Roblox kept {actual_w} x {actual_h} (asked for {width} x {height}); "
-              "it won't go smaller here.")
+    else:
+        minimum = refused_size()
+        if minimum and below_minimum((actual_w, actual_h), minimum):
+            settings_store.save(REFUSED_SETTING, None)  # it went smaller after all
     return actual_w, actual_h
 
 
@@ -176,25 +252,38 @@ def _is_maximized(hwnd: int) -> bool:
         return False
 
 
-def apply(choice: Choice, windows: list[int] | None = None, *, layout_all: bool = True) -> int:
+def apply(choice: Choice, windows: list[int] | None = None, *, layout_all: bool = True) -> ApplyResult:
     """Apply the choice. Fit mode lays the windows out in order, top-left first."""
+    result = ApplyResult(errors=[])
     if choice.mode == MODE_OFF:
-        return 0
+        restore_borders()
+        return result
     windows = roblox_windows() if windows is None else windows
     work = primary_work_area()
-    done = 0
+    result.asked = target_size(choice, work)
     for index, hwnd in enumerate(windows):
         try:
             if choice.mode == MODE_FIT and layout_all:
                 x, y, w, h = slot_rect(work, choice.layout, index)
-                resize_window(hwnd, w, h, x, y)
+                actual = resize_window(hwnd, w, h, x, y, choice.allow_smaller)
             else:
                 w, h = target_size(choice, work)
-                resize_window(hwnd, w, h)
-            done += 1
+                actual = resize_window(hwnd, w, h, allow_smaller=choice.allow_smaller)
+            if actual[0] > w + _TOLERANCE or actual[1] > h + _TOLERANCE:
+                result.refused = actual
+            else:
+                result.resized += 1
         except Exception as exc:
-            print(f"[Window Size] Could not resize a Roblox window: {exc}")
-    return done
+            result.errors.append(_explain(exc))
+    print(f"[Window Size] {result.summary()}")
+    return result
+
+
+def _explain(exc: Exception) -> str:
+    code = getattr(exc, "winerror", None) or (exc.args[0] if getattr(exc, "args", None) else None)
+    if code == 5:
+        return "Windows blocked it (is Roblox running as administrator?)"
+    return str(exc) or type(exc).__name__
 
 
 def place_new(choice: Choice, hwnd: int, others: list[int]) -> None:
@@ -208,9 +297,9 @@ def place_new(choice: Choice, hwnd: int, others: list[int]) -> None:
             except Exception:
                 continue
         x, y, w, h = slot_rect(work, choice.layout, free_slot(work, choice.layout, taken))
-        resize_window(hwnd, w, h, x, y)
+        resize_window(hwnd, w, h, x, y, choice.allow_smaller)
     elif choice.mode == MODE_SIZE:
-        resize_window(hwnd, *choice.size)
+        resize_window(hwnd, *choice.size, allow_smaller=choice.allow_smaller)
 
 
 class WindowSizeWatcher:

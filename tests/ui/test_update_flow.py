@@ -179,5 +179,24 @@ class UpdateDialogTests(unittest.TestCase):
         with patch.object(ui.updater_mod, "download_update", side_effect=lambda **kw: calls.append(kw)):
             self.open_dialog(act=act)
 
+    def test_finished_download_waits_for_ok_then_restarts(self):
+        self.window._bridge = ui._Bridge()
+        self.window._quit_for_update = MagicMock()
+        calls = []
+
+        def act(seen):
+            QApplication.processEvents()
+            calls[0]["on_done"](True, "")
+            QApplication.processEvents()
+            self.window._quit_for_update.assert_not_called()  # nothing happens by itself
+            buttons = seen["dialog"].findChildren(QPushButton)
+            self.assertEqual([b.text() for b in buttons], ["OK"])
+            with patch.object(ui.QTimer, "singleShot", side_effect=lambda _ms, *a: a[-1]()):
+                buttons[0].click()
+            self.window._quit_for_update.assert_called_once()
+
+        with patch.object(ui.updater_mod, "download_update", side_effect=lambda **kw: calls.append(kw)):
+            self.open_dialog(act=act)
+
 if __name__ == "__main__":
     unittest.main()

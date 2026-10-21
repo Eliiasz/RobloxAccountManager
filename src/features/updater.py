@@ -39,7 +39,7 @@ LEGACY_ASSET_NAMES = (
 )
 DOWNLOAD_HOST = "github.com"
 MAX_NOTES_LENGTH = 6000
-PROCESS_WAIT_SECONDS = 120
+PROCESS_WAIT_SECONDS = 3600  # the user restarts with the update window's OK button
 REPLACE_WAIT_SECONDS = 30
 
 def _clean(version: str) -> str:

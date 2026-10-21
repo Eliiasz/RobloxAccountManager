@@ -35,6 +35,47 @@ class MathTests(unittest.TestCase):
         self.assertEqual(choice.layout, (12, 1))
 
 
+class ApplyResultTests(unittest.TestCase):
+    def _apply(self, actual):
+        choice = ws.Choice(ws.MODE_SIZE, (320, 240), (5, 4))
+        with patch.object(ws, "primary_work_area", return_value=WORK), \
+                patch.object(ws, "resize_window", return_value=actual) as resize:
+            result = ws.apply(choice, windows=[1, 2, 3])
+        return result, resize
+
+    def test_one_summary_line_for_many_windows(self):
+        result, _ = self._apply((320, 240))
+        self.assertEqual(result.resized, 3)
+        self.assertEqual(result.summary(), "Resized 3 windows to 320 × 240.")
+
+    def test_refused_size_is_reported(self):
+        result, _ = self._apply((1020, 797))
+        self.assertEqual(result.refused, (1020, 797))
+        self.assertIn("won't go smaller", result.summary())
+
+    def test_admin_block_is_explained(self):
+        error = OSError(5, "Access is denied.")
+        error.winerror = 5
+        self.assertIn("administrator", ws._explain(error))
+
+    def test_experimental_option_is_passed_on(self):
+        choice = ws.Choice(ws.MODE_SIZE, (320, 240), (5, 4), allow_smaller=True)
+        with patch.object(ws, "primary_work_area", return_value=WORK), \
+                patch.object(ws, "resize_window", return_value=(320, 240)) as resize:
+            ws.apply(choice, windows=[1])
+        self.assertTrue(resize.call_args.kwargs["allow_smaller"])
+
+    def test_off_gives_the_borders_back(self):
+        with patch.object(ws, "restore_borders") as restore:
+            ws.apply(ws.Choice(ws.MODE_OFF, (320, 240), (5, 4)), windows=[1])
+        restore.assert_called_once()
+
+    def test_below_minimum(self):
+        self.assertTrue(ws.below_minimum((320, 240), (1020, 797)))
+        self.assertFalse(ws.below_minimum((1020, 797), (1020, 797)))
+        self.assertFalse(ws.below_minimum((320, 240), None))
+
+
 class WatcherTests(unittest.TestCase):
     def test_new_windows_are_resized_once_after_settling(self):
         watcher = ws.WindowSizeWatcher()
