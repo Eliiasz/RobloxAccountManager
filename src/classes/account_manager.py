@@ -1216,7 +1216,7 @@ class RobloxAccountManager:
             session["launch_blocked"] = confirmed
         return confirmed
 
-    def launch_roblox(self, username, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path="", parallel=False):
+    def launch_roblox(self, username, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path="", parallel=False, follow_user_id=""):
         # All entry points (batch, Auto-Rejoin and WebSocket) share this gate.
         # parallel=True (Launch Delay 0) holds the gate only while the launch is
         # sent, then confirms the client outside it so several clients start at
@@ -1235,7 +1235,7 @@ class RobloxAccountManager:
                 before = launch_monitor._snapshot()
             result = self._launch_roblox(
                 username, game_id, private_server_id, launcher_preference,
-                job_id, custom_launcher_path,
+                job_id, custom_launcher_path, follow_user_id,
             )
             if result and session is not None:
                 if parallel and session.get("mode") != "handle64":
@@ -1246,7 +1246,7 @@ class RobloxAccountManager:
                 return result
         return self._confirm(*deferred[:2], deferred[2], username)
 
-    def _launch_roblox(self, username, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path=""):
+    def _launch_roblox(self, username, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path="", follow_user_id=""):
         """Launch Roblox game with specified account"""
         if username not in self.accounts:
             print(f"[ERROR] Account '{username}' not found")
@@ -1292,6 +1292,7 @@ class RobloxAccountManager:
             launcher_preference,
             job_id,
             custom_launcher_path,
+            follow_user_id=follow_user_id,
         )
         if launched and isinstance(launched.data, dict):
             tracker = launched.data.get('browser_tracker_id')

@@ -386,16 +386,18 @@ class WebSocketServer:
 
         place_id = str(presence.get("place_id", "") or "")
         game_id = str(presence.get("game_id",  "") or "")
-        if not place_id:
-            return {"ok": False, "error": "Missing place_id in presence data"}
 
+        # Join the way the Join button on a profile in the Roblox app does:
+        # Roblox finds the user's current server.
         s = self._get_settings()
         launcher = s.get("roblox_launcher", "default")
         custom = s.get("custom_roblox_launcher_path", "")
-        launched = self.manager.launch_roblox(account, place_id, "", launcher, game_id, custom)
+        launched = self.manager.launch_roblox(
+            account, launcher_preference=launcher, custom_launcher_path=custom, follow_user_id=str(user_id),
+        )
 
         if launched:
-            print(f"[SUCCESS] WebSocket: {account} joined {target_user} in place {place_id}")
+            print(f"[SUCCESS] WebSocket: {account} joined {target_user}")
             return {
                 "ok": True,
                 "result": {

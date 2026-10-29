@@ -691,29 +691,24 @@ def join_user(manager, usernames: list[str] | str, target_username: str, on_done
                 ))
                 return
 
-            place_id = str(presence.get("place_id", "") or "")
-            game_id  = str(presence.get("game_id",  "") or "")
-
-            if not place_id:
-                msg = (f"{target_username} is in a game, but their privacy doesn't let these accounts join them. "
-                       "Their Roblox setting \"Who can join me?\" must be Everyone, or the accounts must be "
-                       "their friends.")
-                print(f"[WARNING] join_user: {msg}")
-                on_done(False, OperationResult.failure(
-                    "TARGET_PLACE_HIDDEN",
-                    "Can't Join This User",
-                    msg,
-                ))
-                return
+            if not presence.get("place_id"):
+                # Roblox decides per account when it joins; its own message
+                # shows in the game window if "Who can join me?" blocks it.
+                print(f"[INFO] join_user: {target_username}'s server is hidden from these accounts; "
+                      "asking Roblox to join them anyway.")
 
             S = load_ui_settings()
             launcher = S.get("roblox_launcher", "default")
             custom_path = S.get("custom_roblox_launcher_path", "")
+            follow_id = str(target_user_id)
 
+            # Each account joins the way the Join button on the user's profile in
+            # the Roblox app does: Roblox finds the user's current server for it,
+            # so later accounts in a batch follow the user if they move servers.
             launch_delay = get_launch_delay_seconds(S)
             success, failures, successful_launches = _run_launch_batch(
                 usernames,
-                lambda u, parallel: manager.launch_roblox(u, place_id, job_id=game_id, launcher_preference=launcher, custom_launcher_path=custom_path, parallel=parallel),
+                lambda u, parallel: manager.launch_roblox(u, follow_user_id=follow_id, launcher_preference=launcher, custom_launcher_path=custom_path, parallel=parallel),
                 launch_delay,
                 "join_user",
             )

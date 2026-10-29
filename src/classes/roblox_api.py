@@ -520,8 +520,12 @@ class RobloxAPI:
             )
     
     @staticmethod
-    def launch_roblox(username, cookie, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path=""):
-        """Launch Roblox game with specified account"""
+    def launch_roblox(username, cookie, game_id="", private_server_id="", launcher_preference="default", job_id="", custom_launcher_path="", follow_user_id=""):
+        """Launch Roblox game with specified account.
+
+        follow_user_id: join that user's current server, the way the Join
+        button on a profile in the Roblox app does (Roblox finds the server).
+        """
         if not str(username or "").strip():
             return OperationResult.failure(
                 "ACCOUNT_MISSING",
@@ -531,6 +535,13 @@ class RobloxAPI:
 
         game_id = str(game_id or "").strip()
         job_id = str(job_id or "").strip()
+        follow_user_id = str(follow_user_id or "").strip()
+        if follow_user_id and not _PLACE_ID_RE.fullmatch(follow_user_id):
+            return OperationResult.failure(
+                "TARGET_USER_ID_INVALID",
+                "Invalid User ID",
+                "The user to join has an invalid user ID.",
+            )
         if game_id and not _PLACE_ID_RE.fullmatch(game_id):
             return OperationResult.failure(
                 "PLACE_ID_INVALID",
@@ -575,6 +586,23 @@ class RobloxAPI:
                     "launch_time": launch_time / 1000.0,
                 })
             return result
+
+        if follow_user_id:
+            place_launcher_url = (
+                "https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestFollowUser" +
+                "&browserTrackerId=" + str(browser_tracker_id) +
+                "&userId=" + follow_user_id
+            )
+            url = (
+                "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket +
+                "+launchtime:" + str(launch_time) +
+                "+placelauncherurl:" + place_launcher_url +
+                "+browsertrackerid:" + str(browser_tracker_id) +
+                "+robloxLocale:en_us+gameLocale:en_us"
+            )
+            print(f"[INFO] Launching Roblox for {username} to join user {follow_user_id}")
+            print(f"[INFO] Launcher: {launcher_preference}")
+            return execute_launch(url, place_launcher_url)
 
         if not game_id and not private_server_id:
             url = (

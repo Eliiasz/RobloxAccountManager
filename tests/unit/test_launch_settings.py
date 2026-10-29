@@ -43,8 +43,18 @@ class LaunchSettingsTests(unittest.TestCase):
             result = self.server._execute('JoinUser demo target')
         self.assertTrue(result['ok'], result)
         self.manager.launch_roblox.assert_called_once_with(
-            'demo', '123', '', 'custom', 'job', self.settings['custom_roblox_launcher_path'],
+            'demo', launcher_preference='custom',
+            custom_launcher_path=self.settings['custom_roblox_launcher_path'], follow_user_id='1',
         )
+
+    def test_websocket_join_user_works_when_the_server_is_hidden(self):
+        with patch('features.websocket_server.RobloxAPI.get_user_id_from_username', return_value=7), patch(
+            'features.websocket_server.RobloxAPI.get_player_presence',
+            return_value={'in_game': True, 'place_id': None, 'game_id': None},
+        ):
+            result = self.server._execute('JoinUser demo target')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(self.manager.launch_roblox.call_args.kwargs['follow_user_id'], '7')
 
     def test_rejoin_reads_current_launcher_settings(self):
         worker = auto_rejoin.AutoRejoinWorker('demo', {}, self.manager, self.status)

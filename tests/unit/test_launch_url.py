@@ -24,6 +24,22 @@ class LaunchUrlTests(unittest.TestCase):
         self.assertIn("&placeId=1818&", url)
         self.assertIn("&gameId=" + JOB_ID + "+", url)
 
+    def test_join_user_uses_robloxs_follow_user_request(self):
+        result, run = launch(follow_user_id="123456")
+        self.assertTrue(result)
+        url = run.call_args.args[0]
+        self.assertIn("PlaceLauncher.ashx?request=RequestFollowUser&", url)
+        self.assertIn("&userId=123456+", url)
+        self.assertNotIn("placeId=", url)
+
+    def test_join_user_rejects_a_bad_user_id(self):
+        for bad in ("12&placeId=1", "abc", "1 2"):
+            with self.subTest(user_id=bad):
+                result, run = launch(follow_user_id=bad)
+                self.assertFalse(result)
+                self.assertEqual(result.code, "TARGET_USER_ID_INVALID")
+                run.assert_not_called()
+
     def test_whitespace_around_place_id_is_ignored(self):
         result, run = launch(game_id=" 1818 ")
         self.assertTrue(result)
