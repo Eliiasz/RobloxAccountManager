@@ -1,5 +1,6 @@
 """
-Small, optional animations: button hover and press feedback and page fades.
+Small, optional animations: button hover and press feedback, page fades and
+dialogs that fade in.
 
 Nothing here touches a widget's stylesheet. Buttons get a transparent child
 overlay that is tinted with the theme's text color, so every existing button
@@ -11,16 +12,23 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QAbstractButton, QGraphicsOpacityEffect, QPushButton, QToolButton, QWidget
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QRectF, Qt, QVariantAnimation
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import QAbstractButton, QDialog, QGraphicsOpacityEffect, QPushButton, QToolButton, QWidget
 
 ANIMATIONS_SETTING = "ui_animations"
 HOVER_ALPHA = 14
 PRESS_ALPHA = 22
-HOVER_MS = 130
-PRESS_MS = 80
+RIM_ALPHA = 60
+HOVER_MS = 170
+PRESS_MS = 90
 FADE_MS = 150
+DIALOG_FADE_MS = 140
+RADIUS = 10.0
+# Flat buttons (no frame of their own) get the tint but not the glow rim.
+FLAT_BUTTONS = frozenset({
+    "sideNav", "navTab", "groupTab", "titleButton", "closeButton", "rowMenu", "discordRound",
+})
 _MARKER = "_motion_attached"
 _SPI_GETCLIENTAREAANIMATION = 0x1042
 
@@ -57,16 +65,30 @@ class _Overlay(QWidget):
         if alpha <= 0:
             return
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = min(RADIUS, rect.height() / 2)
         color = QColor(self._motion.tint)
         color.setAlpha(alpha)
-        painter.fillRect(self.rect(), color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawRoundedRect(rect, radius, radius)
+        rim = self._motion.rim_alpha()
+        if rim > 0:
+            glow = QColor(self._motion.glow)
+            glow.setAlpha(rim)
+            painter.setPen(QPen(glow, 1.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect, radius, radius)
 
 
 class ButtonMotion(QObject):
-    def __init__(self, button: QAbstractButton, tint: str, animate: bool = True):
+    def __init__(self, button: QAbstractButton, tint: str, animate: bool = True, glow: str | None = None):
         super().__init__(button)
         self.button = button
         self.tint = tint
+        self.glow = glow or tint
+        self.flat = button.objectName() in FLAT_BUTTONS
         self.animate = animate
         self.hover = 0.0
         self.press = 0.0
@@ -93,6 +115,11 @@ class ButtonMotion(QObject):
         if not self.button.isEnabled():
             return 0
         return min(255, round(HOVER_ALPHA * self.hover + PRESS_ALPHA * self.press))
+
+    def rim_alpha(self) -> int:
+        if self.flat or not self.button.isEnabled():
+            return 0
+        return min(255, round(RIM_ALPHA * self.hover))
 
     def _go(self, attribute: str, target: float) -> None:
         animation = self._hover_animation if attribute == "hover" else self._press_animation
@@ -124,26 +151,42 @@ class ButtonMotion(QObject):
 
 
 class MotionFilter(QObject):
-    def __init__(self, tint: str, animate: bool = True, parent: QObject | None = None):
+    def __init__(self, tint: str, animate: bool = True, parent: QObject | None = None, glow: str | None = None):
         super().__init__(parent)
         self.tint = tint
+        self.glow = glow or tint
         self.animate = animate
 
     def eventFilter(self, watched, event):
-        if (
-            event.type() == QEvent.Type.Show
-            and isinstance(watched, (QPushButton, QToolButton))
-            and not watched.property(_MARKER)
-        ):
+        if event.type() != QEvent.Type.Show or watched.property(_MARKER):
+            return False
+        if isinstance(watched, (QPushButton, QToolButton)):
             watched.setProperty(_MARKER, True)
-            ButtonMotion(watched, self.tint, self.animate)
+            ButtonMotion(watched, self.tint, self.animate, self.glow)
+        elif isinstance(watched, QDialog) and self.animate:
+            watched.setProperty(_MARKER, True)
+            fade_window_in(watched)
         return False
 
 
-def install(app, tint: str, settings: dict | None = None) -> MotionFilter | None:
+def fade_window_in(window: QWidget, duration: int = DIALOG_FADE_MS) -> QVariantAnimation:
+    """Fade a top-level window (a dialog) in from transparent."""
+    window.setWindowOpacity(0.0)
+    animation = QVariantAnimation(window)
+    animation.setDuration(duration)
+    animation.setStartValue(0.0)
+    animation.setEndValue(1.0)
+    animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+    animation.valueChanged.connect(lambda value: window.setWindowOpacity(float(value)))
+    animation.finished.connect(lambda: window.setWindowOpacity(1.0))
+    animation.start(QVariantAnimation.DeletionPolicy.DeleteWhenStopped)
+    return animation
+
+
+def install(app, tint: str, settings: dict | None = None, glow: str | None = None) -> MotionFilter | None:
     if not bool((settings or {}).get(ANIMATIONS_SETTING, True)):
         return None
-    motion_filter = MotionFilter(tint, animate=animations_enabled(settings), parent=app)
+    motion_filter = MotionFilter(tint, animate=animations_enabled(settings), parent=app, glow=glow)
     app.installEventFilter(motion_filter)
     return motion_filter
 

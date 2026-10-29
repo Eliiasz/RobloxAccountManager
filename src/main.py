@@ -28,6 +28,8 @@ import features.settings_store as settings_store
 from utils.app_paths import get_data_dir, get_resource_path
 from utils.version import APP_VERSION
 
+_FRESH_INSTALL = not settings_store.load()
+
 diagnostics.install(APP_VERSION)
 
 # 2.9.0 redesign: move everyone to the ANAne Orange theme and the new default
@@ -40,6 +42,21 @@ try:
         settings_store.save("anane_theme_applied", True)
 except Exception as _exc:
     print(f"[WARNING] Could not apply the new theme: {_exc}")
+
+# 2.11.0, once: new users start on Mono Glass (existing users keep the theme
+# they have), cookies are only checked from Account Health, and 10 log files
+# are kept. Later changes in Settings are kept.
+try:
+    if not settings_store.get("v2_11_defaults_applied"):
+        from features import color_themes
+
+        if _FRESH_INSTALL:
+            settings_store.save(color_themes.THEME_SETTING, color_themes.DEFAULT_THEME)
+        settings_store.save("validate_cookies_on_startup", False)
+        settings_store.save("log_retention_count", diagnostics.DEFAULT_LOG_RETENTION)
+        settings_store.save("v2_11_defaults_applied", True)
+except Exception as _exc:
+    print(f"[WARNING] Could not apply the 2.11.0 defaults: {_exc}")
 
 from utils import splash
 

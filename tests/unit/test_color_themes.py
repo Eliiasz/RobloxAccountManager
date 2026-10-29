@@ -13,8 +13,20 @@ LEGACY_DEFAULTS = {
 
 
 class ResolveColorsTests(unittest.TestCase):
-    def test_default_theme_is_the_anane_orange_theme(self):
-        colors = ct.resolve_colors({})
+    def test_new_users_get_mono_glass(self):
+        self.assertEqual(ct.DEFAULT_THEME, "mono_glass")
+        self.assertEqual(ct.resolve_colors({}), ct.resolve_colors({"color_theme": "mono_glass"}))
+
+    def test_the_new_themes_are_listed(self):
+        labels = dict(ct.theme_choices())
+        self.assertEqual(labels["mono_glass"], "Mono Glass")
+        self.assertEqual(labels["violet_glow"], "Violet Glow")
+        self.assertEqual(labels["sky_paper"], "Sky Paper")
+        self.assertTrue(ct.is_light("sky_paper"))
+        self.assertFalse(ct.is_light("violet_glow"))
+
+    def test_existing_themes_keep_their_colours(self):
+        colors = ct.resolve_colors({"color_theme": "default"})
         self.assertEqual(colors["ACCENT"], "#FF7A1A")
         self.assertEqual(colors["BG"], "#0A0D13")
         self.assertEqual(ct.PRESETS["default"]["label"], "ANAne Orange")
@@ -48,23 +60,14 @@ class ResolveColorsTests(unittest.TestCase):
 
     def test_choices_start_with_the_default_and_have_labels(self):
         choices = ct.theme_choices()
-        self.assertEqual(choices[0], ("default", "ANAne Orange"))
+        self.assertEqual(choices[0], ("mono_glass", "Mono Glass"))
         self.assertTrue(all(label for _, label in choices))
 
-    def test_custom_accent_replaces_the_accent_and_its_variants(self):
-        colors = ct.resolve_colors({"color_theme": "classic", "accent_color": "#e5557f"})
-        self.assertEqual(colors["ACCENT"], "#E5557F")
-        for key in ct.DERIVED_ACCENT:
-            with self.subTest(key=key):
-                self.assertNotEqual(colors[key], LEGACY_DEFAULTS[key])
-        self.assertEqual(colors["BG"], LEGACY_DEFAULTS["BG"])
-        self.assertEqual(colors["HOVER"], LEGACY_DEFAULTS["HOVER"])
-
-    def test_custom_accent_works_on_every_preset(self):
-        for name in ct.PRESETS:
-            colors = ct.resolve_colors({"color_theme": name, "accent_color": "#FFD400"})
-            self.assertEqual(colors["ACCENT"], "#FFD400")
-            self.assertEqual(colors["ON_ACCENT"], "#101010")
+    def test_a_saved_custom_accent_is_ignored(self):
+        self.assertEqual(
+            ct.resolve_colors({"color_theme": "classic", "accent_color": "#e5557f"}),
+            ct.resolve_colors({"color_theme": "classic"}),
+        )
 
     def test_settings_are_not_modified(self):
         settings = {"color_theme": "nord", "accent_color": "#112233"}
@@ -76,8 +79,6 @@ class ReadabilityTests(unittest.TestCase):
     def all_themes(self):
         for name in ct.PRESETS:
             yield name, ct.resolve_colors({"color_theme": name})
-        for accent in ("#FF0000", "#00FF00", "#0000FF", "#FFFFFF", "#000000", "#808080", "#FFD400"):
-            yield f"default+{accent}", ct.resolve_colors({"accent_color": accent})
 
     def check(self, first, second, minimum):
         for name, colors in self.all_themes():

@@ -1,15 +1,17 @@
 """
 features/color_themes.py
-Colour presets for the application and the maths for a custom accent colour.
+Colour presets for the application.
+
+A new theme is one more entry in PRESETS: the Settings gallery lists every
+entry, in order, with a preview built from its colours.
 """
 
 from __future__ import annotations
 
 import re
 
-DEFAULT_THEME = "default"
+DEFAULT_THEME = "mono_glass"
 THEME_SETTING = "color_theme"
-ACCENT_SETTING = "accent_color"
 
 BASE_KEYS = ("BG", "PANEL", "INPUT", "TEXT", "MUTED", "LINE", "SELECT", "NOTE", "ACCENT")
 DERIVED_KEYS = (
@@ -18,13 +20,47 @@ DERIVED_KEYS = (
     "ACCENT_TEXT", "ACCENT_DEEP", "ON_ACCENT",
 )
 KEYS = BASE_KEYS + DERIVED_KEYS
-DERIVED_ACCENT = frozenset({
-    "ACCENT_HOVER", "ACCENT_PRESSED", "ACCENT_BRIGHT", "ACCENT_SOFT", "ACCENT_TEXT", "ACCENT_DEEP",
-})
 
 _HEX = re.compile(r"#[0-9a-fA-F]{6}")
 
 PRESETS: dict[str, dict] = {
+    "mono_glass": {
+        "label": "Mono Glass",
+        "BG": "#050506", "PANEL": "#0C0C0E", "INPUT": "#141417",
+        "TEXT": "#F4F4F5", "MUTED": "#9C9CA3", "LINE": "#27272C",
+        "SELECT": "#1E1E23", "NOTE": "#D4D4D8", "ACCENT": "#E4E6EB",
+        "explicit": {
+            "HOVER": "#2A2A30", "PRESSED": "#0E0E11", "RAISED": "#1C1C21",
+            "ACCENT_HOVER": "#F4F5F7", "ACCENT_PRESSED": "#C4C7CE",
+            "ACCENT_BRIGHT": "#FFFFFF", "ACCENT_SOFT": "#2E2F34",
+            "ACCENT_TEXT": "#E9EAEE", "ACCENT_DEEP": "#121215",
+        },
+    },
+    "violet_glow": {
+        "label": "Violet Glow",
+        "BG": "#07060F", "PANEL": "#0E0C1C", "INPUT": "#151229",
+        "TEXT": "#EEEAFB", "MUTED": "#A39DC0", "LINE": "#2A2346",
+        "SELECT": "#221C40", "NOTE": "#C9A7FF", "ACCENT": "#8B5CF6",
+        "explicit": {
+            "HOVER": "#2B2450", "PRESSED": "#0F0C1E", "RAISED": "#1D1838",
+            "ACCENT_HOVER": "#A07BFA", "ACCENT_PRESSED": "#7340E8",
+            "ACCENT_BRIGHT": "#9B6BFF", "ACCENT_SOFT": "#2F2160",
+            "ACCENT_TEXT": "#B79BFF", "ACCENT_DEEP": "#140F2A",
+        },
+    },
+    "sky_paper": {
+        "label": "Sky Paper",
+        "light": True,
+        "BG": "#EEF5FC", "PANEL": "#FFFFFF", "INPUT": "#F5F9FE",
+        "TEXT": "#10233A", "MUTED": "#526277", "LINE": "#D3E1F0",
+        "SELECT": "#DDEBFA", "NOTE": "#8A5200", "ACCENT": "#1E88E5",
+        "explicit": {
+            "HOVER": "#E3EEF9", "PRESSED": "#D5E4F4", "RAISED": "#FFFFFF",
+            "ACCENT_HOVER": "#3B9BEC", "ACCENT_PRESSED": "#1670C2",
+            "ACCENT_BRIGHT": "#2B92EA", "ACCENT_SOFT": "#CFE5FA",
+            "ACCENT_TEXT": "#1565C0", "ACCENT_DEEP": "#E6F1FC",
+        },
+    },
     "default": {
         "label": "ANAne Orange",
         "BG": "#0A0D13", "PANEL": "#10141C", "INPUT": "#151A24",
@@ -158,21 +194,20 @@ def theme_choices() -> list[tuple[str, str]]:
     return [(key, preset["label"]) for key, preset in PRESETS.items()]
 
 
-def resolve_colors(settings: dict | None = None) -> dict[str, str]:
+def theme_name(settings: dict | None = None) -> str:
     settings = settings if isinstance(settings, dict) else {}
     name = settings.get(THEME_SETTING)
-    preset = PRESETS.get(name if isinstance(name, str) else "", PRESETS[DEFAULT_THEME])
+    return name if isinstance(name, str) and name in PRESETS else DEFAULT_THEME
+
+
+def is_light(name: str) -> bool:
+    return bool(PRESETS.get(name, {}).get("light"))
+
+
+def resolve_colors(settings: dict | None = None) -> dict[str, str]:
+    preset = PRESETS[theme_name(settings)]
     colors = {key: preset[key] for key in BASE_KEYS}
-
-    accent = settings.get(ACCENT_SETTING)
-    custom_accent = is_hex_color(accent)
-    if custom_accent:
-        colors["ACCENT"] = accent.upper()
-
     colors.update(neutral_variants(colors))
     colors.update(accent_variants(colors["ACCENT"], colors["BG"]))
-    explicit = preset.get("explicit")
-    if explicit:
-        colors.update({key: value for key, value in explicit.items() if key not in DERIVED_ACCENT or not custom_accent})
-    colors["ON_ACCENT"] = accent_variants(colors["ACCENT"], colors["BG"])["ON_ACCENT"]
+    colors.update(preset.get("explicit") or {})
     return colors

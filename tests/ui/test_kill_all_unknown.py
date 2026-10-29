@@ -56,15 +56,16 @@ class KillAllUnknownTests(unittest.TestCase):
         self.assertEqual(keep, {1, 2})
 
 
-    def test_kill_all_pauses_queue_and_auto_rejoin(self):
+    def test_kill_all_holds_auto_rejoin_but_the_queue_moves_on(self):
         w = _window()
         w._launch_queue = {"paused": False, "force": False, "pause_reason": ""}
         w._poll_queue = MagicMock()
         with patch.object(ui.ar, "pause_all") as pause:
             self._press(w, set(), set())
-        pause.assert_called_once()
-        self.assertTrue(w._launch_queue["paused"])
-        self.assertIn("Kill All", w._launch_queue["pause_reason"])
+        pause.assert_called_once_with()  # the default 60 seconds
+        self.assertEqual(ui.ar.KILL_ALL_PAUSE_SECONDS, 60)
+        self.assertFalse(w._launch_queue["paused"])
+        self.assertEqual(w._launch_queue["pause_reason"], "")
 
     def test_next_batch_is_not_paused(self):
         w = _window()

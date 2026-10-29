@@ -22,7 +22,7 @@ MAX_DELAY = 60.0
 
 
 def validation_enabled(settings: dict) -> bool:
-    return bool(settings.get("validate_cookies_on_startup", True))
+    return bool(settings.get("validate_cookies_on_startup", False))
 
 
 def get_validation_delay(settings: dict) -> float:

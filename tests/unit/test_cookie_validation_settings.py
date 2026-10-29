@@ -4,8 +4,11 @@ from features import cookie_validator
 
 
 class CookieValidationSettingsTests(unittest.TestCase):
-    def test_validation_is_on_by_default(self):
-        self.assertTrue(cookie_validator.validation_enabled({}))
+    def test_validation_is_off_by_default(self):
+        self.assertFalse(cookie_validator.validation_enabled({}))
+
+    def test_validation_can_be_turned_on(self):
+        self.assertTrue(cookie_validator.validation_enabled({"validate_cookies_on_startup": True}))
 
     def test_validation_can_be_turned_off(self):
         self.assertFalse(cookie_validator.validation_enabled({"validate_cookies_on_startup": False}))

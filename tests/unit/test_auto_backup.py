@@ -54,27 +54,77 @@ class AutoBackupTests(unittest.TestCase):
         self.assertTrue(account_backup.read_backup(path, "my-long-password"))
         self.assertNotIn(auto_backup.AUTO_KEY, manager.secure)
 
-    def test_only_the_newest_backups_are_kept_and_copied(self):
+    def _backup_at(self, manager, second, automatic):
+        with patch.object(auto_backup, "datetime") as fake:
+            fake.now.return_value = datetime(2026, 1, 1, 12, 0, second)
+            fake.strptime = datetime.strptime
+            self.assertTrue(auto_backup.make_backup(manager, automatic=automatic))
+
+    def test_only_the_newest_three_automatic_backups_are_kept_and_copied(self):
         extra = os.path.join(self.folder, "usb")
         settings_store.save(auto_backup.EXTRA_FOLDER_SETTING, extra)
         manager = _Manager({"alice": {"cookie": "c1"}})
-        for second in range(auto_backup.KEEP + 3):
-            stamp = datetime(2026, 1, 1, 12, 0, second)
-            with patch.object(auto_backup, "datetime") as fake:
-                fake.now.return_value = stamp
-                fake.strptime = datetime.strptime
-                self.assertTrue(auto_backup.make_backup(manager))
-        self.assertEqual(len(auto_backup.list_backups()), auto_backup.KEEP)
-        self.assertEqual(len(auto_backup.list_backups(extra)), auto_backup.KEEP)
+        self.assertEqual(auto_backup.KEEP, 3)
+        for second in range(auto_backup.KEEP + 1):
+            self._backup_at(manager, second, automatic=True)
+        for folder in (None, extra):
+            backups = auto_backup.list_backups(folder)
+            self.assertEqual(len(backups), 3)
+            self.assertTrue(all(backup["automatic"] for backup in backups))
+            self.assertEqual(min(backup["when"].second for backup in backups), 1)  # the oldest went
+
+    def test_manual_backups_are_never_deleted(self):
+        manager = _Manager({"alice": {"cookie": "c1"}})
+        for second in range(5):
+            self._backup_at(manager, second, automatic=False)
+        for second in range(10, 16):
+            self._backup_at(manager, second, automatic=True)
+        backups = auto_backup.list_backups()
+        self.assertEqual(sum(1 for b in backups if not b["automatic"]), 5)
+        self.assertEqual(sum(1 for b in backups if b["automatic"]), 3)
+
+    def test_older_backups_without_the_auto_prefix_count_as_manual(self):
+        os.makedirs(auto_backup.backup_folder(), exist_ok=True)
+        open(os.path.join(auto_backup.backup_folder(), "accounts-20250101-120000-2.rambak"), "w").close()
+        manager = _Manager({"alice": {"cookie": "c1"}})
+        for second in range(5):
+            self._backup_at(manager, second, automatic=True)
+        names = {os.path.basename(b["path"]) for b in auto_backup.list_backups()}
+        self.assertIn("accounts-20250101-120000-2.rambak", names)
+
+    def test_without_a_password_backups_are_still_encrypted(self):
+        manager = _Manager({"alice": {"cookie": "secret-cookie"}})
+        auto_backup.make_backup(manager, automatic=True)
+        path = auto_backup.list_backups()[0]["path"]
+        with open(path, "rb") as handle:
+            self.assertNotIn(b"secret-cookie", handle.read())
+        self.assertIn(auto_backup.AUTO_KEY, manager.secure)
+
+    def test_the_last_export_password_is_used_for_automatic_backups(self):
+        manager = _Manager({"alice": {"cookie": "c1"}})
+        auto_backup.remember_export_password(manager, "export-password-1")
+        auto_backup.make_backup(manager, automatic=True)
+        path = auto_backup.list_backups()[0]["path"]
+        self.assertTrue(account_backup.read_backup(path, "export-password-1"))
+        auto_backup.remember_export_password(manager, "")
+        self.assertEqual(manager.secure[auto_backup.PASSWORD_KEY], "export-password-1")
 
     def test_nothing_to_back_up(self):
         self.assertFalse(auto_backup.make_backup(_Manager({})))
 
-    def test_change_backup_waits_an_hour_and_needs_a_change(self):
-        settings_store.save(auto_backup.LAST_BACKUP_SETTING, 1000.0)
-        self.assertFalse(auto_backup.backup_due("2:x", "2:x", now=10_000))
-        self.assertFalse(auto_backup.backup_due("3:y", "2:x", now=1000 + 60))
-        self.assertTrue(auto_backup.backup_due("3:y", "2:x", now=1000 + auto_backup.CHANGE_INTERVAL_SECONDS))
+    def test_an_automatic_backup_is_due_every_24_hours(self):
+        self.assertTrue(auto_backup.backup_due(now=10_000))  # never made one
+        settings_store.save(auto_backup.LAST_AUTO_SETTING, 10_000.0)
+        self.assertFalse(auto_backup.backup_due(now=10_000 + 23 * 3600))
+        self.assertTrue(auto_backup.backup_due(now=10_000 + 24 * 3600))
+        self.assertTrue(auto_backup.backup_due(now=5_000))  # clock went back
+
+    def test_a_manual_backup_does_not_reset_the_24_hour_timer(self):
+        manager = _Manager({"alice": {"cookie": "c1"}})
+        auto_backup.make_backup(manager)
+        self.assertTrue(auto_backup.backup_due())
+        auto_backup.make_backup(manager, automatic=True)
+        self.assertFalse(auto_backup.backup_due())
 
 
 if __name__ == "__main__":

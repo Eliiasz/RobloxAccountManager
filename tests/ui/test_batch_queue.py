@@ -48,6 +48,20 @@ class BatchQueueTests(unittest.TestCase):
         w._on_queue_poll(0)
         self.assertIsNone(w._launch_queue)   # finished
 
+    def test_a_batch_that_never_starts_moves_on_instead_of_pausing(self):
+        w, _ = _window()
+        w._launch_queue["phase_since"] -= w._QUEUE_START_TIMEOUT + 1
+        w._on_queue_poll(0)
+        self.assertFalse(w._launch_queue["paused"])
+        self.assertEqual(w.sent, [["c", "d"]])
+
+    def test_kill_all_during_a_batch_opens_the_next_one(self):
+        w, _ = _window()
+        w._on_queue_poll(2)
+        w._on_queue_poll(0)  # Kill All closed every client
+        w._on_queue_poll(0)
+        self.assertEqual(w.sent, [["c", "d"]])
+
     def test_pause_holds_next_batch_until_resume(self):
         w, _ = _window()
         w._on_queue_poll(2)

@@ -44,7 +44,7 @@ Evanovar RAM is an open source Windows desktop application for organizing Roblox
 - Search and edit Roblox settings through a saved local profile with optional Auto Apply.
 - Protect saved account data with hardware encryption or password encryption, and export password-protected account backups.
 - Use Chrome, Firefox, Edge, or the optional portable Chromium browser for account login flows.
-- Customize the interface with color themes, image/GIF/video backgrounds, and detachable pages.
+- Customize the interface with a theme gallery (Mono Glass, Violet Glow, Sky Paper and more) and detachable pages.
 
 ## Installation
 
@@ -160,7 +160,7 @@ While Multi Roblox protects the native files, Roblox cannot persist shared app c
 | Smooth animations | Buttons light up when you point at or click them and pages fade in. This can be turned off under Settings > General, and it is off automatically when Windows animations are off. |
 | Loading screen | A small window with the version and a progress bar shows while the app starts and fades into the main window. It can be turned off under Settings > General. |
 | Color themes | Pick one of eight color presets (Default, Midnight, AMOLED Black, Nord, Dracula, Solarized Dark, Forest, Rose) and optionally your own accent color under Settings > Themes, with a live preview. The choice is applied the next time the application starts. |
-| Custom backgrounds | Choose a local image, animated GIF, or video under Settings > Themes, adjust the Opacity Blur slider, and customize text, muted text, outlines, and surface tint. Background changes apply immediately, Reset Theme restores the background defaults. |
+| Themes | Pick a theme from the gallery under Settings > Themes. A theme is applied when the application restarts; use Restart now to switch right away. |
 | Detachable pages | Right-click a navigation page and choose Open in New Window. Show or reattach it from the same menu, closing the detached window also reattaches it. |
 | Window preferences | Resize the main window, keep its saved size between runs, or enable Always on Top under Settings > General. |
 | System tray | Hide the main window to the system tray, restore it from the tray icon, or exit from the tray menu. |
@@ -186,7 +186,7 @@ While Multi Roblox protects the native files, Roblox cannot persist shared app c
 
 ## Data and privacy
 
-Evanovar RAM stores its application data in `AccountManagerData`. This includes saved accounts and their backup, encryption configuration, groups, favorites, recent games, Auto-Rejoin configurations, UI preferences, the local `RobloxSettings.json` profile, avatar cache, and diagnostic logs. Downloaded portable Chromium is also kept there. Custom background media is read from the path you choose.
+Evanovar RAM stores its application data in `AccountManagerData`. This includes saved accounts and their backup, encryption configuration, groups, favorites, recent games, Auto-Rejoin configurations, UI preferences, the local `RobloxSettings.json` profile, avatar cache, and diagnostic logs. Downloaded portable Chromium is also kept there.
 
 By default this folder is created next to the application. To keep the data somewhere else, or to run separate profiles side by side, start the application with `--data-dir "D:/Profiles/Alt"` or set the `RAM_DATA_DIR` environment variable. The option wins over the variable, and relative paths, `~` and `%VARIABLES%` are expanded.
 

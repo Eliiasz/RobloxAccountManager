@@ -4,10 +4,14 @@ Automatic account backups.
 
 Backups use the same password-protected .rambak format as Export Accounts,
 so they can be restored with Import Accounts too. With a backup password set
-by the user they open on any PC; otherwise a random key kept in the app's
-own (hardware/password encrypted) secure settings is used, so they open on
-this PC only. The newest few are kept in <data folder>/backups and,
-optionally, copied to an extra folder of the user's choice.
+by the user (or the password of their last Export Accounts) they open on any
+PC; otherwise a random key kept in the app's own (hardware/password
+encrypted) secure settings is used, so they open on this PC only.
+
+An automatic backup is made every 24 hours, always. Automatic backups are
+named auto-accounts-*.rambak and only the newest KEEP of them are kept; a
+"Backup now" (accounts-*.rambak) is manual and never deleted. They live in
+<data folder>/backups and, optionally, are copied to an extra folder.
 """
 
 from __future__ import annotations
@@ -23,22 +27,19 @@ import features.settings_store as settings_store
 from classes.operation_result import OperationResult
 from utils.app_paths import get_data_dir
 
-ENABLED_SETTING = "auto_backup_enabled"
 EXTRA_FOLDER_SETTING = "auto_backup_extra_folder"
 LAST_BACKUP_SETTING = "auto_backup_last"
 PASSWORD_KEY = "backup_password"      # secure setting: the user's own backup password
 AUTO_KEY = "auto_backup_key"          # secure setting: random key for this-PC-only backups
-KEEP = 10
-CHANGE_INTERVAL_SECONDS = 3600
-_NAME = re.compile(r"^accounts-(\d{8}-\d{6})-(\d+)\.rambak$")
+LAST_AUTO_SETTING = "auto_backup_last_auto"
+KEEP = 3
+INTERVAL_SECONDS = 24 * 3600
+AUTO_PREFIX = "auto-"
+_NAME = re.compile(r"^(auto-)?accounts-(\d{8}-\d{6})-(\d+)\.rambak$")
 
 
 def backup_folder() -> str:
     return os.path.join(get_data_dir(), "backups")
-
-
-def is_enabled() -> bool:
-    return bool(settings_store.get(ENABLED_SETTING, True))
 
 
 def has_user_password(manager) -> bool:
@@ -68,8 +69,20 @@ def candidate_passwords(manager) -> list[str]:
     return found
 
 
+def remember_export_password(manager, password: str) -> None:
+    """A manual backup was made with this password: automatic ones use it from now on."""
+    if password and password != str(manager.get_secure_setting(PASSWORD_KEY, "") or ""):
+        saved = manager.set_secure_setting(PASSWORD_KEY, password)
+        if saved is not None and not saved:
+            print(f"[WARNING] Auto backup: the password could not be saved: {getattr(saved, 'message', '')}")
+
+
 def _prune(folder: str, keep: int = KEEP) -> None:
-    backups = sorted(name for name in os.listdir(folder) if _NAME.match(name))
+    """Delete the oldest automatic backups beyond `keep`. Manual ones are never touched."""
+    backups = sorted(
+        name for name in os.listdir(folder)
+        if name.startswith(AUTO_PREFIX) and _NAME.match(name)
+    )
     for name in backups[:-keep] if len(backups) > keep else []:
         try:
             os.remove(os.path.join(folder, name))
@@ -77,7 +90,7 @@ def _prune(folder: str, keep: int = KEEP) -> None:
             pass
 
 
-def make_backup(manager, reason: str = "manual") -> OperationResult:
+def make_backup(manager, reason: str = "manual", automatic: bool = False) -> OperationResult:
     lock = getattr(manager, "_accounts_lock", None)
     if lock is not None:
         with lock:
@@ -93,7 +106,7 @@ def make_backup(manager, reason: str = "manual") -> OperationResult:
     folder = backup_folder()
     os.makedirs(folder, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    name = f"accounts-{stamp}-{len(accounts)}.rambak"
+    name = f"{AUTO_PREFIX if automatic else ''}accounts-{stamp}-{len(accounts)}.rambak"
     path = os.path.join(folder, name)
     result = account_backup.export_accounts(accounts, path, password)
     if not result:
@@ -110,20 +123,20 @@ def make_backup(manager, reason: str = "manual") -> OperationResult:
         except OSError as exc:
             print(f"[WARNING] Auto backup: could not copy to {extra}: {exc}")
     settings_store.save(LAST_BACKUP_SETTING, datetime.now().timestamp())
+    if automatic:
+        settings_store.save(LAST_AUTO_SETTING, datetime.now().timestamp())
     print(f"[INFO] Accounts backup saved ({reason}): {name}" + (f", copy in {copied}" if copied else ""))
     return OperationResult.success(f"Backed up {len(accounts)} account(s).", data={"path": path, "copy": copied})
 
 
-def backup_due(fingerprint: str, last_fingerprint: str, now: float | None = None) -> bool:
-    """A change-triggered backup: only when accounts changed and the last one is an hour old."""
-    if not fingerprint or fingerprint == last_fingerprint:
-        return False
+def backup_due(now: float | None = None) -> bool:
+    """An automatic backup is due once the last one is 24 hours old (or there was none)."""
     now = now if now is not None else datetime.now().timestamp()
     try:
-        last = float(settings_store.get(LAST_BACKUP_SETTING, 0) or 0)
+        last = float(settings_store.get(LAST_AUTO_SETTING, 0) or 0)
     except (TypeError, ValueError):
         last = 0.0
-    return now - last >= CHANGE_INTERVAL_SECONDS
+    return last <= 0 or now - last >= INTERVAL_SECONDS or last > now
 
 
 def list_backups(folder: str | None = None) -> list[dict]:
@@ -138,8 +151,11 @@ def list_backups(folder: str | None = None) -> list[dict]:
         if not match:
             continue
         try:
-            when = datetime.strptime(match.group(1), "%Y%m%d-%H%M%S")
+            when = datetime.strptime(match.group(2), "%Y%m%d-%H%M%S")
         except ValueError:
             continue
-        found.append({"path": os.path.join(folder, name), "when": when, "count": int(match.group(2))})
+        found.append({
+            "path": os.path.join(folder, name), "when": when, "count": int(match.group(3)),
+            "automatic": bool(match.group(1)),
+        })
     return sorted(found, key=lambda item: item["when"], reverse=True)

@@ -306,6 +306,83 @@ def get_windows_by_pid(
     return windows
 
 
+def _has_game_window(hwnds: list[int], hidden: bool) -> bool:
+    for hwnd in hwnds:
+        try:
+            if not win32gui.IsWindow(hwnd) or win32gui.GetWindow(hwnd, 4):  # GW_OWNER
+                continue
+            if not (win32gui.GetWindowText(hwnd) or "").strip():
+                continue
+            if not hidden and not win32gui.IsWindowVisible(hwnd):
+                continue
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            if right > left and bottom > top:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def game_window_pids(hidden_pids: set[int] | None = None) -> set[int]:
+    """Roblox clients that have a real game window: what "N running" counts.
+
+    A window hidden by this app still counts. Roblox processes without one are
+    left out and described once each in the Console (name, path, parent).
+    """
+    hidden_pids = set(hidden_pids or ())
+    pids = set(get_roblox_processes(max_age=1.0))
+    windows = get_windows_by_pid(pids)
+    counted = {pid for pid in pids if _has_game_window(windows.get(pid, []), pid in hidden_pids)}
+    _report_uncounted(counted)
+    return counted
+
+
+_REPORTED: set[tuple[int, float]] = set()
+
+
+def describe_process(pid: int) -> str:
+    """Name, PID, path and parent of a process, for the Console (no command line:
+    a Roblox command line holds a login ticket)."""
+    try:
+        process = psutil.Process(pid)
+        name = process.name()
+    except (psutil.Error, OSError):
+        return f"PID {pid} (already closed)"
+    try:
+        path = process.exe() or "unknown path"
+    except (psutil.Error, OSError):
+        path = "path not readable"
+    try:
+        parent = process.parent()
+        if parent is None:
+            parent_text = "no parent (its parent already closed)"
+        else:
+            try:
+                parent_path = parent.exe()
+            except (psutil.Error, OSError):
+                parent_path = "path not readable"
+            parent_text = f"{parent.name()} (PID {parent.pid}, {parent_path})"
+    except (psutil.Error, OSError):
+        parent_text = "unknown"
+    return f"{name} (PID {pid}) at {path}, started by {parent_text}"
+
+
+def _report_uncounted(counted: set[int]) -> None:
+    try:
+        candidates = [
+            p for p in psutil.process_iter(["pid", "name", "create_time"])
+            if (p.info.get("name") or "").lower() == "robloxplayerbeta.exe" and p.info["pid"] not in counted
+        ]
+    except (psutil.Error, OSError):
+        return
+    for process in candidates:
+        key = (int(process.info["pid"]), float(process.info.get("create_time") or 0.0))
+        if key in _REPORTED:
+            continue
+        _REPORTED.add(key)
+        print(f"[INFO] Not counted as running (no Roblox game window): {describe_process(key[0])}")
+
+
 def _get_roblox_processes() -> dict[int, tuple[float, psutil.Process]]:
     return get_roblox_processes()
 

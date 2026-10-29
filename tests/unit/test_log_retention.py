@@ -24,6 +24,17 @@ class LogRetentionTests(unittest.TestCase):
     def names(self, folder):
         return sorted(os.listdir(os.path.join(self.folder.name, folder)))
 
+    def test_ten_log_files_are_kept_by_default(self):
+        self.assertEqual(diagnostics.DEFAULT_LOG_RETENTION, 10)
+
+    def test_a_new_log_file_removes_the_oldest(self):
+        for number in range(11):
+            self.make("logs", f"hang-{number}.log", age=number)
+        with patch.object(diagnostics, "get_log_retention", return_value=10):
+            diagnostics.prune_after_new_log()
+        self.assertNotIn("hang-10.log", self.names("logs"))
+        self.assertEqual(len(self.names("logs")), 10)
+
     def test_only_the_newest_files_of_each_kind_are_kept(self):
         for number in range(6):
             self.make("logs", f"session-{number}.log", age=number)

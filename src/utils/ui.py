@@ -15,7 +15,6 @@ import tempfile
 import threading
 import time
 import webbrowser
-import weakref
 import uuid
 from dataclasses import replace
 
@@ -30,15 +29,15 @@ if _ROOT_DIR not in sys.path:
 import psutil
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, QUrl, Signal,
+    QEasingCurve, QEvent, QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import (
     QAction, QColor, QCursor, QFont, QIcon, QPainter, QPainterPath, QPen,
-    QImage, QImageReader, QIntValidator, QKeySequence, QMovie, QPalette, QPixmap, QPolygon, QRegion, QShortcut, QTextCharFormat,
+    QIntValidator, QKeySequence, QPalette, QPixmap, QPolygon, QRegion, QShortcut, QTextCharFormat,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
-    QColorDialog, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene,
+    QAbstractButton, QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
+    QComboBox, QDialog, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QMessageBox, QPushButton, QRadioButton, QScrollArea,
@@ -47,7 +46,6 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
     QStyle, QStyleOptionButton, QStyledItemDelegate, QStyleOptionViewItem,
 )
-from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
 from shiboken6 import isValid
 
 from classes import (
@@ -73,7 +71,6 @@ import features.color_themes as color_themes
 import features.cookie_validator as cookie_validator_mod
 import features.roblox_install_guard as install_guard_mod
 import features.pc_usage as pc_usage_mod
-import features.whats_new as whats_new_mod
 import features.roblox_window_size as window_size_mod
 import features.file_holders as file_holders_mod
 import features.chromium as chromium_mod
@@ -93,7 +90,7 @@ import features.websocket_server as ws_mod
 import features.window_grid as window_grid_mod
 import features.window_renamer as window_renamer_mod
 import features.windows_startup as windows_startup_mod
-import features.themes as themes_mod
+import features.app_restart as app_restart
 
 
 class _DragDropFilter(QObject):
@@ -404,6 +401,7 @@ class _Bridge(QObject):
 
 
 SKIPPED_UPDATE_SETTING = "skipped_update_version"
+_THEME_NAME = color_themes.theme_name(actions.load_ui_settings())
 _THEME = color_themes.resolve_colors(actions.load_ui_settings())
 BG = _THEME["BG"]
 PANEL = _THEME["PANEL"]
@@ -440,8 +438,23 @@ PRIMARY_PRESSED = color_themes.mix(FG_ACCENT, "#000000", 0.22)
 # readable color when a custom accent is too light for white.
 PRIMARY_TEXT = "#FFFFFF" if color_themes.contrast_ratio("#FFFFFF", PRIMARY_BOTTOM) >= 2.8 else ON_ACCENT
 SCROLL_HANDLE = color_themes.mix(PANEL, TEXT, 0.16)
+# 2.11.0 look: cards are lit slightly from the top, their border fades from a
+# soft accent glow at the top into the plain outline, and fields glow on focus.
+THEME_IS_LIGHT = color_themes.is_light(_THEME_NAME)
+CARD_TOP = color_themes.mix(PANEL, TEXT, 0.012 if THEME_IS_LIGHT else 0.03)
+CARD_GLOW = color_themes.mix(LINE, FG_ACCENT, 0.45)
+FIELD_GLOW = color_themes.mix(LINE, FG_ACCENT, 0.65)
+TITLE_ICON_ACTIVE = TEXT if THEME_IS_LIGHT else "#FFFFFF"
 SCROLL_HANDLE_HOVER = color_themes.mix(PANEL, TEXT, 0.28)
-ONLINE_GREEN = "#2ECC71"
+ONLINE_GREEN = "#1E9E57" if THEME_IS_LIGHT else "#2ECC71"
+
+
+def _status_color(color: str) -> str:
+    """Bright status colours (green/blue/red) are darkened on a light theme so they stay readable."""
+    return color_themes.mix(color, "#000000", 0.38) if THEME_IS_LIGHT else color
+
+
+RAM_LIMIT_DEFAULT_MB = 300  # "Low RAM Limit"; the Boost switch itself stays off by default
 PRIMARY_BUTTON_QSS = (
     f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {PRIMARY_TOP}, stop:1 {PRIMARY_BOTTOM});"
     f" border: 0; border-radius: 10px; min-height: 42px; padding: 0 14px; text-align: center;"
@@ -704,333 +717,6 @@ class _HotkeyCaptureButton(QPushButton):
         if self._recording:
             self._cancel_recording()
         super().focusOutEvent(event)
-
-
-class _BackgroundCanvas(QWidget):
-    def __init__(self, controller, window):
-        super().__init__(window)
-        self.controller = controller
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setGeometry(window.rect())
-        self.lower()
-
-    def paintEvent(self, event):
-        frame = self.controller.display_frame
-        if frame.isNull():
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        source = QRectF(frame.rect())
-        ratio = max(self.width() / source.width(), self.height() / source.height())
-        source.setWidth(self.width() / ratio)
-        source.setHeight(self.height() / ratio)
-        source.moveCenter(QRectF(frame.rect()).center())
-        painter.drawImage(QRectF(self.rect()), self.controller.sharp_frame, source)
-        region = QRegion()
-        for widget in self.parentWidget().findChildren(QWidget):
-            if (widget.window() is not self.parentWidget() or not widget.isVisible()
-                    or isinstance(widget, (QLabel, _BackgroundCanvas))):
-                continue
-            if widget.objectName() == 'navTab':
-                continue
-            if not isinstance(widget, (QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox,
-                                       QPushButton, QToolButton, QAbstractItemView, QTextEdit,
-                                       QCheckBox, QRadioButton)):
-                if widget.objectName() not in ('navPanel', 'rightPanel', 'titleBar', 'settingsNavSurface'):
-                    continue
-            rect = widget.rect()
-            if isinstance(widget, (QCheckBox, QRadioButton)):
-                option = QStyleOptionButton()
-                option.initFrom(widget)
-                element = (QStyle.SubElement.SE_RadioButtonIndicator if isinstance(widget, QRadioButton)
-                           else QStyle.SubElement.SE_CheckBoxIndicator)
-                rect = widget.style().subElementRect(element, option, widget)
-            rect.translate(widget.mapTo(self.parentWidget(), QPoint()))
-            shape = QRegion(rect, QRegion.RegionType.Ellipse) if isinstance(widget, QRadioButton) else QRegion(rect)
-            ancestor = widget.parentWidget()
-            while ancestor is not None and ancestor is not self.parentWidget():
-                rect = rect.intersected(ancestor.rect().translated(
-                    ancestor.mapTo(self.parentWidget(), QPoint())))
-                ancestor = ancestor.parentWidget()
-            region |= shape.intersected(QRegion(rect))
-        painter.setClipRegion(region)
-        painter.drawImage(QRectF(self.rect()), frame, source)
-        tint = QColor(self.controller.colors['tint'])
-        tint.setAlpha(round(self.controller.amount * 1.6))
-        painter.fillRect(self.rect(), tint)
-
-
-class _BackgroundController(QObject):
-    failed = Signal(str)
-
-    def __init__(self, owner):
-        super().__init__(owner)
-        self.owner = owner
-        self.active = False
-        self.amount = 50
-        self.colors = themes_mod.load_background()
-        self.frame = QImage()
-        self.sharp_frame = QImage()
-        self.display_frame = QImage()
-        self.styles = weakref.WeakKeyDictionary()
-        self.canvases = weakref.WeakKeyDictionary()
-        self.busy = False
-        self.movie = QMovie(self)
-        self.movie.frameChanged.connect(self._movie_frame)
-        self.movie.finished.connect(self._restart_movie)
-        self.movie.error.connect(lambda error: self._fail(self.movie.lastErrorString()))
-        self.player = QMediaPlayer(self)
-        self.sink = QVideoSink(self)
-        self.player.setVideoSink(self.sink)
-        self.player.setLoops(QMediaPlayer.Loops.Infinite)
-        self.player.errorOccurred.connect(lambda error, message: self._fail(message))
-        self.sink.videoFrameChanged.connect(self._video_frame)
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.setSingleShot(True)
-        self.refresh_timer.timeout.connect(self._refresh)
-        self.frame_timer = QTimer(self)
-        self.frame_timer.setInterval(50)
-        self.frame_timer.setSingleShot(True)
-        self.frame_timer.timeout.connect(self._render_frame)
-        self.scene = QGraphicsScene(self)
-        self.blur_item = QGraphicsPixmapItem()
-        self.blur_effect = QGraphicsBlurEffect()
-        self.blur_item.setGraphicsEffect(self.blur_effect)
-        self.scene.addItem(self.blur_item)
-        QApplication.instance().installEventFilter(self)
-
-    def configure(self, enabled, path, amount):
-        self.stop()
-        self.colors = themes_mod.load_background()
-        self.amount = amount
-        if not enabled:
-            return
-        self.active = True
-        suffix = os.path.splitext(path)[1].lower()
-        if suffix in themes_mod.VIDEO_EXTENSIONS:
-            self.player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
-            self.player.play()
-        elif suffix == '.gif':
-            self.movie.setFileName(path)
-            size = QImageReader(path).size()
-            if size.isValid():
-                self.movie.setScaledSize(size.scaled(1280, 720, Qt.AspectRatioMode.KeepAspectRatio))
-            if not self.movie.isValid():
-                self._fail('The GIF could not be decoded.')
-                return
-            self.movie.start()
-        else:
-            reader = QImageReader(path)
-            reader.setAutoTransform(True)
-            size = reader.size()
-            if size.width() > 1920 or size.height() > 1080:
-                reader.setScaledSize(size.scaled(1920, 1080, Qt.AspectRatioMode.KeepAspectRatio))
-            self.frame = reader.read()
-            if self.frame.isNull():
-                self._fail(reader.errorString())
-                return
-            self._render_frame()
-        self.refresh_timer.start(0)
-
-    def set_amount(self, amount):
-        self.amount = amount
-        if self.active:
-            self._render_frame()
-            self.refresh_timer.start(0)
-
-    def _fail(self, message):
-        if not self.active:
-            return
-        self.stop()
-        self.failed.emit(message)
-
-    def _movie_frame(self, number):
-        if self.active:
-            self.frame = self.movie.currentImage()
-            if not self.frame_timer.isActive():
-                self.frame_timer.start()
-
-    def _restart_movie(self):
-        if self.active:
-            self.movie.start()
-
-    def _video_frame(self, frame):
-        if self.active and frame.isValid() and not self.frame_timer.isActive():
-            self.frame = frame.toImage()
-            self.frame_timer.start()
-
-    def _render_frame(self):
-        if not self.active or self.frame.isNull():
-            return
-        image = self.frame.scaled(1280, 720, Qt.AspectRatioMode.KeepAspectRatio,
-                                  Qt.TransformationMode.SmoothTransformation)
-        self.sharp_frame = image
-        if self.amount:
-            self.blur_item.setPixmap(QPixmap.fromImage(image))
-            self.blur_effect.setBlurRadius(self.amount * 0.3)
-            self.scene.setSceneRect(QRectF(image.rect()))
-            result = QImage(image.size(), QImage.Format.Format_ARGB32_Premultiplied)
-            result.fill(Qt.GlobalColor.black)
-            painter = QPainter(result)
-            self.scene.render(painter, QRectF(result.rect()), QRectF(image.rect()))
-            painter.end()
-            self.display_frame = result
-        else:
-            self.display_frame = image
-        for window, canvas in list(self.canvases.items()):
-            if isValid(canvas):
-                canvas.update()
-            else:
-                self.canvases.pop(window, None)
-
-    def _themed_style(self, style):
-        style = re.sub(
-            r'(background(?:-color)?\s*:\s*)([^;{}]+)(;|(?=\}))',
-            r'\1transparent\3', style,
-            flags=re.IGNORECASE,
-        )
-        for old, key in ((TEXT, 'text'), (MUTED, 'muted'), (LINE, 'outline')):
-            style = re.sub(re.escape(old), self.colors[key], style, flags=re.IGNORECASE)
-        style = re.sub(r'(border(?:-(?:top|bottom|left|right|color))?\s*:[^;{}]*?)#[0-9a-fA-F]{6}',
-                       lambda m: m.group(1) + self.colors['outline'], style)
-        return style
-
-    def _refresh(self):
-        if not self.active or self.busy:
-            return
-        self.busy = True
-        try:
-            widgets = QApplication.instance().allWidgets()
-            for widget in widgets:
-                if isinstance(widget, _BackgroundCanvas):
-                    continue
-                window = widget.window()
-                popup = isinstance(window, QMenu) or window.windowType() == Qt.WindowType.Popup
-                if not isinstance(window, (QMainWindow, QDialog)) and not popup:
-                    continue
-                if not popup and window not in self.canvases:
-                    canvas = _BackgroundCanvas(self, window)
-                    self.canvases[window] = canvas
-                    canvas.show()
-                    canvas.lower()
-                current = widget.styleSheet()
-                saved = self.styles.get(widget)
-                if saved is None or current != saved[1]:
-                    original = current
-                else:
-                    original = saved[0]
-                transformed = self._themed_style(original)
-                if widget is window:
-                    if transformed.strip() and '{' not in transformed:
-                        transformed = f'{widget.metaObject().className()} {{ {transformed} }}'
-                    base = (
-                        f"QWidget {{ background: transparent; color: {self.colors['text']}; }}"
-                        'QLineEdit, QAbstractSpinBox, QComboBox, QPushButton, QToolButton, '
-                        'QAbstractItemView, QTextEdit, QHeaderView::section {'
-                        f" background: transparent; border: 1px solid {self.colors['outline']}; border-radius: 0; }}"
-                    )
-                    transformed = base + transformed
-                    # Top-level backgrounds must not cover the media layer.
-                    transformed += (
-                        'QMainWindow, QDialog { background: transparent; }'
-                        'QCheckBox::indicator:checked, QRadioButton::indicator:checked {'
-                        f' background: {ACCENT_BRIGHT}; }}'
-                        f"QToolTip {{ background: {self.colors['tint']};"
-                        f" color: {self.colors['text']};"
-                        f" border: 1px solid {self.colors['outline']}; padding: 4px 6px; }}"
-                    )
-                    if isinstance(window, QMenu):
-                        # QMenu paints action text itself. A child canvas covers that text.
-                        transformed += (
-                            f"QMenu {{ background: {self.colors['tint']}; color: {self.colors['text']};"
-                            f" border: 1px solid {self.colors['outline']}; }}"
-                            f"QMenu::item {{ background: transparent; color: {self.colors['text']}; }}"
-                            f"QMenu::item:selected {{ background: {self.colors['outline']}; }}"
-                            f"QMenu::item:disabled {{ color: {self.colors['muted']}; }}"
-                        )
-                # Local widget rules must win over styles inherited from parent frames.
-                if not isinstance(widget, QMenu):
-                    if transformed.strip() and '{' not in transformed:
-                        transformed = f'{widget.metaObject().className()} {{ {transformed} }}'
-                    transformed += f'{widget.metaObject().className()} {{ background: transparent; }}'
-                if isinstance(widget, QLabel):
-                    transformed += 'QLabel { border: none; background: transparent; }'
-                if isinstance(widget, QLineEdit) and isinstance(widget.parentWidget(),
-                                                               (QComboBox, QSpinBox, QDoubleSpinBox)):
-                    # Composite controls own the border, padding, and height of their editor.
-                    transformed += ('QLineEdit { border: 0; padding: 0; margin: 0;'
-                                    ' min-height: 0; min-width: 0; background: transparent; }')
-                if widget.objectName() == 'navTab':
-                    transformed += (
-                        'QPushButton#navTab { background: transparent; border: none;'
-                        ' border-left: 2px solid transparent; }'
-                        f"QPushButton#navTab:checked {{ border-left: 2px solid {self.colors['text']};"
-                        f" color: {self.colors['text']}; font-weight: 700; }}"
-                        f"QPushButton#navTab:hover {{ color: {self.colors['text']}; }}"
-                    )
-                if popup:
-                    transformed += (
-                        f"QWidget {{ background: {self.colors['tint']}; color: {self.colors['text']}; }}"
-                        f"QAbstractItemView::item:selected, QMenu::item:selected {{ background: {self.colors['outline']}; }}"
-                    )
-                self.styles[widget] = (original, transformed)
-                if current != transformed:
-                    widget.setStyleSheet(transformed)
-                if widget is window and window in self.canvases:
-                    self.canvases[window].lower()
-            visible = any(isValid(window) and window.isVisible() and not window.isMinimized()
-                          for window in self.canvases)
-            if self.movie.fileName():
-                self.movie.setPaused(not visible)
-            if not self.player.source().isEmpty():
-                if visible:
-                    self.player.play()
-                else:
-                    self.player.pause()
-        finally:
-            self.busy = False
-
-    def eventFilter(self, obj, event):
-        if not self.active or self.busy or isinstance(obj, _BackgroundCanvas):
-            return False
-        if isinstance(obj, QWidget):
-            kind = event.type()
-            if kind == QEvent.Type.Resize and obj in self.canvases:
-                self.canvases[obj].setGeometry(obj.rect())
-            elif kind in (QEvent.Type.Show, QEvent.Type.Hide, QEvent.Type.StyleChange,
-                          QEvent.Type.Polish, QEvent.Type.WindowStateChange,
-                          QEvent.Type.Move, QEvent.Type.Wheel):
-                self.refresh_timer.start(0)
-                for canvas in self.canvases.values():
-                    if isValid(canvas):
-                        canvas.update()
-        return False
-
-    def stop(self):
-        self.active = False
-        self.refresh_timer.stop()
-        self.frame_timer.stop()
-        self.movie.stop()
-        self.movie.setFileName('')
-        self.player.stop()
-        self.player.setSource(QUrl())
-        for widget, (original, transformed) in list(self.styles.items()):
-            try:
-                if widget.styleSheet() == transformed:
-                    widget.setStyleSheet(original)
-            except RuntimeError:
-                pass
-        self.styles.clear()
-        for canvas in list(self.canvases.values()):
-            try:
-                canvas.hide()
-                canvas.deleteLater()
-            except RuntimeError:
-                pass
-        self.canvases.clear()
-        self.frame = QImage()
-        self.display_frame = QImage()
 
 
 class _PrivateServerManagerDialog(QDialog):
@@ -1399,48 +1085,87 @@ class _DetachedPageWindow(QMainWindow):
         self.hide()
         self.reattach_requested.emit(self.page_index)
 
-class _ThemePreview(QWidget):
-    def __init__(self, colors: dict, parent=None):
-        super().__init__(parent)
-        self._colors = colors
-        self.setFixedHeight(76)
-        self.setAccessibleName("Color theme preview")
+class _ThemeCard(QAbstractButton):
+    """One theme in the Settings gallery: a small preview of its colours and its name."""
 
-    def set_colors(self, colors: dict) -> None:
+    def __init__(self, key: str, label: str, colors: dict, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self._label = label
         self._colors = colors
-        self.update()
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(118)
+        self.setMinimumWidth(150)
+        self.setAccessibleName(f"{label} theme")
+        self.setToolTip(label)
 
     def paintEvent(self, event):
         c = self._colors
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width, height = self.width(), self.height()
-        painter.fillRect(0, 0, width, height, QColor(c["BG"]))
-        painter.fillRect(0, 0, 70, height, QColor(c["PANEL"]))
+        outer = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        if self.isChecked():
+            glow = QColor(FG_ACCENT)
+            for width, alpha in ((5, 40), (3, 80)):
+                glow.setAlpha(alpha)
+                painter.setPen(QPen(glow, width))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(outer, 12, 12)
+        border = QColor(FG_ACCENT if self.isChecked() else (TEXT if self.underMouse() else LINE))
+        if not self.isChecked() and self.underMouse():
+            border.setAlpha(110)
+        painter.setPen(QPen(border, 1.5))
+        painter.setBrush(QColor(PANEL))
+        painter.drawRoundedRect(outer, 12, 12)
+
+        preview = outer.adjusted(8, 8, -8, -30)
+        path = QPainterPath()
+        path.addRoundedRect(preview, 8, 8)
+        painter.save()
+        painter.setClipPath(path)
+        painter.fillRect(preview, QColor(c["BG"]))
+        side = QRectF(preview.left(), preview.top(), preview.width() * 0.28, preview.height())
+        painter.fillRect(side, QColor(c["PANEL"]))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(c["RAISED"]))
-        painter.drawRect(8, 10, 54, 16)
+        painter.setBrush(QColor(c["ACCENT_SOFT"]))
+        painter.drawRoundedRect(QRectF(side.left() + 5, side.top() + 8, side.width() - 10, 9), 3, 3)
         painter.setBrush(QColor(c["INPUT"]))
-        painter.drawRect(8, 32, 54, 12)
-        painter.drawRect(8, 50, 54, 12)
+        for row in range(2):
+            painter.drawRoundedRect(QRectF(side.left() + 5, side.top() + 23 + row * 13, side.width() - 10, 7), 3, 3)
+        body_left = side.right() + 8
+        body_width = preview.right() - body_left - 8
         painter.setBrush(QColor(c["INPUT"]))
-        painter.drawRect(80, 10, width - 192, 20)
-        painter.setPen(QColor(c["LINE"]))
-        painter.drawRect(80, 10, width - 193, 19)
-        painter.setPen(QColor(c["TEXT"]))
-        painter.drawText(88, 25, "Account name")
-        painter.setPen(QColor(c["NOTE"]))
-        painter.drawText(88, 48, "note")
-        painter.setPen(QColor(c["MUTED"]))
-        painter.drawText(88, 66, "Muted text")
+        painter.setPen(QPen(QColor(c["LINE"]), 1))
+        painter.drawRoundedRect(QRectF(body_left, preview.top() + 8, body_width, preview.height() - 16), 5, 5)
         painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(c["TEXT"]))
+        painter.drawRoundedRect(QRectF(body_left + 6, preview.top() + 15, body_width * 0.55, 5), 2, 2)
+        painter.setBrush(QColor(c["MUTED"]))
+        painter.drawRoundedRect(QRectF(body_left + 6, preview.top() + 26, body_width * 0.38, 4), 2, 2)
         painter.setBrush(QColor(c["ACCENT"]))
-        painter.drawRect(width - 104, 10, 96, 22)
-        painter.setPen(QColor(c["ON_ACCENT"]))
-        painter.drawText(width - 104, 10, 96, 22, Qt.AlignmentFlag.AlignCenter, "Accent")
-        painter.setPen(QColor(c["ACCENT_TEXT"]))
-        painter.drawText(width - 104, 52, "Link text")
+        painter.drawRoundedRect(QRectF(body_left + body_width - 40, preview.bottom() - 22, 34, 12), 5, 5)
+        painter.restore()
+
+        painter.setPen(QColor(TEXT))
+        font = painter.font()
+        font.setPixelSize(12)
+        font.setBold(self.isChecked())
+        painter.setFont(font)
+        text_rect = QRectF(outer.left() + 10, outer.bottom() - 26, outer.width() - 20, 22)
+        painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), self._label)
+        if self.isChecked():
+            painter.setPen(QColor(ACCENT_TEXT))
+            painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), "Selected")
         painter.end()
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
 
 
 class _ResizeHandle(QSizeGrip):
@@ -2070,7 +1795,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._start_pc_usage_timer()
         self._start_window_size_watcher()
         QTimer.singleShot(8000, self._start_auto_backup)
-        QTimer.singleShot(900, self._show_whats_new)
         QTimer.singleShot(1500, self._offer_secure_settings_reset)
 
         self._refresh_account_list()
@@ -2131,135 +1855,29 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         QTimer.singleShot(500, self._start_update_check)
         if S.get("browser_type", "chrome") == "chromium":
             QTimer.singleShot(1500, self._start_chromium_status_check)
-        self._background = _BackgroundController(self)
-        self._background.failed.connect(self._on_background_failed)
-        QTimer.singleShot(0, self._restore_background)
         print("[INFO] UI ready")
 
-    def _restore_background(self):
-        config = themes_mod.load_background()
-        if config['enabled']:
-            self._apply_background(config['enabled'], config['path'], config['blur'])
+    def _theme_changed_since_start(self) -> bool:
+        return color_themes.theme_name(actions.load_ui_settings()) != _THEME_NAME
 
-    def _on_background_failed(self, detail):
-        if hasattr(self, '_theme_enabled'):
-            self._theme_enabled.blockSignals(True)
-            self._theme_enabled.setChecked(False)
-            self._theme_enabled.blockSignals(False)
-        config = themes_mod.load_background()
-        themes_mod.save_background(False, config['path'], config['blur'])
-        self._show_operation_error(OperationResult.failure(
-            'BACKGROUND_DECODE_FAILED', 'Background Could Not Open',
-            'The image or video could not be played. Choose another file.',
-            detail=detail,
-        ))
+    def _on_theme_card_clicked(self, key: str) -> None:
+        actions.save_ui_setting(color_themes.THEME_SETTING, key)
+        for card_key, card in self._theme_cards.items():
+            card.setChecked(card_key == key)
+        self._refresh_theme_restart_banner()
 
-    def _apply_background(self, enabled, path, blur):
-        if enabled:
-            result = themes_mod.validate_background(path)
-            if not result:
-                if hasattr(self, '_theme_enabled'):
-                    self._theme_enabled.blockSignals(True)
-                    self._theme_enabled.setChecked(False)
-                    self._theme_enabled.blockSignals(False)
-                self._background.stop()
-                themes_mod.save_background(False, path, blur)
-                self._show_operation_error(result)
-                return
-        themes_mod.save_background(enabled, path, blur)
-        self._background.configure(enabled, path, blur)
+    def _refresh_theme_restart_banner(self) -> None:
+        banner = getattr(self, "_theme_restart_banner", None)
+        if banner is not None and isValid(banner):
+            banner.setVisible(self._theme_changed_since_start())
 
-    def _on_background_changed(self):
-        self._apply_background(
-            self._theme_enabled.isChecked(), self._theme_path.text().strip(),
-            self._theme_blur.value(),
-        )
-
-    def _browse_background(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, 'Choose Background', self._theme_path.text(),
-            'Backgrounds (*.png *.jpg *.jpeg *.bmp *.webp *.gif *.mp4 *.webm *.mkv *.mov *.avi)',
-        )
-        if path:
-            self._theme_path.setText(path)
-            self._on_background_changed()
-
-    def _on_background_blur(self, value):
-        self._theme_blur_label.setText(f'{value}%')
-        self._background.set_amount(value)
-        self._theme_save_timer.start(250)
-
-    def _save_background_blur(self):
-        config = themes_mod.load_background()
-        themes_mod.save_background(config['enabled'], config['path'], self._theme_blur.value())
-
-    def _selected_theme_colors(self) -> dict:
-        return color_themes.resolve_colors({
-            color_themes.THEME_SETTING: self._color_theme_combo.currentData(),
-            color_themes.ACCENT_SETTING: actions.load_ui_settings().get(color_themes.ACCENT_SETTING),
-        })
-
-    def _refresh_color_theme_controls(self) -> None:
-        colors = self._selected_theme_colors()
-        self._theme_preview.set_colors(colors)
-        accent_is_custom = color_themes.is_hex_color(
-            actions.load_ui_settings().get(color_themes.ACCENT_SETTING)
-        )
-        self._accent_button.setText(colors["ACCENT"].upper())
-        self._accent_reset_button.setEnabled(accent_is_custom)
-        self._color_theme_hint.setText(
-            "Restart the application to use the new colors."
-            if self._color_theme_pending()
-            else "Color themes are applied when the application starts."
-        )
-
-    def _color_theme_pending(self) -> bool:
-        return self._selected_theme_colors() != _THEME
-
-    def _on_color_theme_changed(self, _index: int) -> None:
-        actions.save_ui_setting(color_themes.THEME_SETTING, self._color_theme_combo.currentData())
-        self._refresh_color_theme_controls()
-
-    def _choose_accent_color(self) -> None:
-        color = QColorDialog.getColor(
-            QColor(self._selected_theme_colors()["ACCENT"]), self, "Choose Accent Color"
-        )
-        if not color.isValid():
-            return
-        actions.save_ui_setting(color_themes.ACCENT_SETTING, color.name().upper())
-        self._refresh_color_theme_controls()
-
-    def _reset_accent_color(self) -> None:
-        actions.save_ui_setting(color_themes.ACCENT_SETTING, "")
-        self._refresh_color_theme_controls()
-
-    def _choose_theme_color(self, key):
-        config = themes_mod.load_background()
-        color = QColorDialog.getColor(QColor(config[key]), self, 'Choose Color')
-        if not color.isValid():
-            return
-        themes_mod.save_color(key, color.name())
-        self._theme_color_buttons[key].setText(color.name().upper())
-        self._background.colors = themes_mod.load_background()
-        if self._background.active:
-            self._background._refresh()
-            self._background._render_frame()
-
-    def _reset_theme(self):
-        self._theme_save_timer.stop()
-        config = themes_mod.reset_background()
-        self._background.stop()
-        self._background.colors = config
-        for widget in (self._theme_enabled, self._theme_path, self._theme_blur):
-            widget.blockSignals(True)
-        self._theme_enabled.setChecked(False)
-        self._theme_path.clear()
-        self._theme_blur.setValue(config['blur'])
-        self._theme_blur_label.setText(f"{config['blur']}%")
-        for key, button in self._theme_color_buttons.items():
-            button.setText(config[key].upper())
-        for widget in (self._theme_enabled, self._theme_path, self._theme_blur):
-            widget.blockSignals(False)
+    def _restart_for_theme(self) -> None:
+        self._theme_restart_btn.setEnabled(False)
+        self._theme_restart_btn.setText("Restarting...")
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(app_restart.start_new_copy)
+        QTimer.singleShot(150, self._quit_for_update)
 
     def _apply_stylesheet(self):
         check_path = _checkmark_icon_path(PRIMARY_TEXT).replace("\\", "/")
@@ -2283,7 +1901,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             QPushButton#closeButton:hover {{ background: #C42B1C; }}
 
             QFrame#navPanel {{
-                background: {PANEL}; border: 1px solid {LINE}; border-radius: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {CARD_TOP}, stop:1 {PANEL});
+                border: 1px solid qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {CARD_GLOW}, stop:0.35 {LINE});
+                border-radius: 18px;
             }}
             QFrame#navIndicator {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -2319,15 +1939,17 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             }}
 
             QFrame#centerPanel, QFrame#card {{
-                background: {PANEL}; border: 1px solid {LINE}; border-radius: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {CARD_TOP}, stop:1 {PANEL});
+                border: 1px solid qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {CARD_GLOW}, stop:0.25 {LINE});
+                border-radius: 18px;
             }}
             QFrame#rightPanel {{ background: transparent; border: 0; }}
             QFrame#currentGame {{
-                background: {INPUT}; border: 1px solid {LINE}; border-radius: 12px;
+                background: {INPUT}; border: 1px solid {LINE}; border-radius: 14px;
             }}
 
-            QLabel#sectionTitle {{ font-size: 15px; font-weight: 700; background: transparent; }}
-            QLabel#cardTitle {{ font-size: 19px; font-weight: 700; background: transparent; }}
+            QLabel#sectionTitle {{ font-size: 15px; font-weight: 600; background: transparent; }}
+            QLabel#cardTitle {{ font-size: 19px; font-weight: 600; background: transparent; }}
             QLabel#fieldLabel {{ color: {MUTED}; font-size: 12px; background: transparent; }}
             QLabel#runningCount {{ color: {MUTED}; font-size: 12px; background: transparent; }}
             QLabel#titleText, QLabel#titleSub {{ background: transparent; }}
@@ -2377,7 +1999,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 padding: 5px 10px; min-height: 24px; color: {TEXT};
                 selection-background-color: {FG_ACCENT};
             }}
-            QLineEdit:focus {{ border: 1px solid {FG_ACCENT}; }}
+            QLineEdit:hover {{ border: 1px solid {HOVER}; }}
+            QLineEdit:focus {{ border: 1px solid {FIELD_GLOW}; background: {RAISED}; }}
             QLineEdit:disabled {{ color: {MUTED}; }}
             QLineEdit#searchBox {{ min-height: 30px; font-size: 13px; padding-left: 6px; }}
             QComboBox QLineEdit, QAbstractSpinBox QLineEdit {{
@@ -2388,7 +2011,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 background: {INPUT}; border: 1px solid {LINE}; border-radius: 10px;
                 padding: 5px 10px; min-height: 24px; color: {TEXT};
             }}
-            QComboBox:focus, QComboBox:on {{ border: 1px solid {FG_ACCENT}; }}
+            QComboBox:hover {{ border: 1px solid {HOVER}; }}
+            QComboBox:focus, QComboBox:on {{ border: 1px solid {FIELD_GLOW}; }}
             QComboBox::drop-down {{ border: 0; width: 26px; }}
             QComboBox::down-arrow {{ image: url({arrow_path}); width: 10px; height: 10px; }}
             QComboBox QAbstractItemView {{
@@ -2403,8 +2027,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 min-height: 28px; padding: 3px 12px;
                 text-align: left; font-size: 12px; color: {TEXT};
             }}
-            QPushButton:hover {{ background: {RAISED}; border: 1px solid {HOVER}; }}
-            QPushButton:pressed {{ background: {PRESSED}; }}
+            QPushButton:hover {{ background: {RAISED}; border: 1px solid {ACCENT_TINT_LINE}; }}
+            QPushButton:pressed {{ background: {PRESSED}; border: 1px solid {ACCENT_TINT_LINE}; }}
             QPushButton:disabled {{ color: {MUTED}; }}
 
             QPushButton#primary {{
@@ -2453,7 +2077,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             QToolButton#splitArrow::menu-indicator {{ image: none; }}
 
             QMenu {{
-                background: {PANEL}; border: 1px solid {LINE};
+                background: {PANEL}; border: 1px solid {CARD_GLOW}; border-radius: 10px;
                 color: {TEXT}; font-size: 12px; padding: 6px;
             }}
             QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 6px; }}
@@ -2463,15 +2087,15 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             QMenu::section {{ color: {MUTED}; font-size: 10px; font-weight: 700; padding: 6px 12px 2px 12px; }}
 
             QToolTip {{
-                background: {PANEL}; border: 1px solid {LINE};
-                color: {TEXT}; padding: 5px 8px;
+                background: {PANEL}; border: 1px solid {CARD_GLOW}; border-radius: 6px;
+                color: {TEXT}; padding: 6px 9px;
             }}
 
             QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-            QScrollBar::handle:vertical {{ background: {SCROLL_HANDLE}; border-radius: 3px; min-height: 30px; }}
+            QScrollBar::handle:vertical {{ background: {SCROLL_HANDLE}; border-radius: 4px; min-height: 30px; }}
             QScrollBar::handle:vertical:hover {{ background: {SCROLL_HANDLE_HOVER}; }}
             QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-            QScrollBar::handle:horizontal {{ background: {SCROLL_HANDLE}; border-radius: 3px; min-width: 30px; }}
+            QScrollBar::handle:horizontal {{ background: {SCROLL_HANDLE}; border-radius: 4px; min-width: 30px; }}
             QScrollBar::handle:horizontal:hover {{ background: {SCROLL_HANDLE_HOVER}; }}
             QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: 0; background: none; }}
             QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
@@ -2496,8 +2120,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             QDialog {{ background: {BG}; }}
             QTextEdit {{
                 background: {INPUT}; border: 1px solid {LINE}; border-radius: 10px;
-                color: {TEXT}; font-size: 11px;
+                color: {TEXT}; font-size: 11px; selection-background-color: {FG_ACCENT};
             }}
+            QTextEdit:focus {{ border: 1px solid {FIELD_GLOW}; }}
 
             QCheckBox {{ color: {TEXT}; font-size: 12px; spacing: 9px; background: transparent; }}
             QCheckBox::indicator {{
@@ -2539,7 +2164,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             QSlider::sub-page:horizontal:disabled {{ background: {ACCENT_SOFT}; }}
 
             QGroupBox {{
-                border: 1px solid {LINE}; border-radius: 12px;
+                border: 1px solid {LINE}; border-radius: 14px;
                 margin-top: 12px; padding-top: 6px;
                 font-size: 10px; font-weight: 700; color: {MUTED};
             }}
@@ -2671,8 +2296,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._page_names[index],
             page,
             self.windowIcon(),
-            self._background.styles.get(self, (self.styleSheet(),))[0]
-            if hasattr(self, '_background') else self.styleSheet(),
+            self.styleSheet(),
         )
         detached.reattach_requested.connect(self._reattach_page)
         if self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint:
@@ -2816,7 +2440,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             btn.setToolTip(tip)
             btn.setAccessibleName(tip)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            btn.setIcon(icons.make_icon(icon_name, TEXT, active="#FFFFFF", size=16))
+            active = "#FFFFFF" if name == "closeButton" else TITLE_ICON_ACTIVE
+            btn.setIcon(icons.make_icon(icon_name, TEXT, active=active, size=16))
             btn.setIconSize(QSize(16, 16))
             btn_lay.addWidget(btn)
             return btn
@@ -2844,7 +2469,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             if button is not None and isValid(button):
                 maximized = self.isMaximized()
                 button.setIcon(icons.make_icon("restore" if maximized else "maximize",
-                                               TEXT, active="#FFFFFF", size=16))
+                                               TEXT, active=TITLE_ICON_ACTIVE, size=16))
                 button.setToolTip("Restore" if maximized else "Maximize")
             handle = getattr(self, "_resize_handle", None)
             if handle is not None and isValid(handle):
@@ -5037,12 +4662,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 q["phase"], q["phase_since"], q["empty_polls"] = "running", now, 0
                 self._update_queue_status()
             elif now - q["phase_since"] > self._QUEUE_START_TIMEOUT:
-                q["paused"] = True
+                # The queue never pauses itself: move on to the next batch.
                 q["phase"], q["phase_since"] = "waiting", now
                 print(f"[WARNING] Batch queue: batch {q['batch']} did not start within "
-                      f"{self._QUEUE_START_TIMEOUT:.0f}s. Queue paused, press Resume or Next Batch.")
+                      f"{self._QUEUE_START_TIMEOUT:.0f}s. Moving on to the next batch.")
                 self._update_queue_status()
-            return
+            else:
+                return
         if q["phase"] == "running":
             # Two empty polls in a row: avoids reacting to a client restarting.
             q["empty_polls"] = q["empty_polls"] + 1 if count == 0 else 0
@@ -5630,8 +5256,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._sett_cookie_check_chk = _chk(
             "validate_cookies_on_startup", "Check Cookies on Startup",
             "Check every saved account cookie with Roblox shortly after the app starts.\n"
-            "Turn this off to avoid the background requests. Takes effect on the next start.",
-            default=True,
+            "Off by default: cookies are only checked when you press the button on the\n"
+            "Account Health page. Takes effect on the next start.",
+            default=False,
         )
         f.addWidget(self._sett_cookie_check_chk)
 
@@ -5701,7 +5328,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         log_retention_label = QLabel("Log Files to Keep")
         log_retention_label.setToolTip(
             "Keep this many of the newest session, crash, hang and update logs.\n"
-            "Older ones are deleted when the application starts. Set to 0 to keep everything."
+            "The oldest is deleted each time a new log file is made. Set to 0 to keep everything."
         )
         log_retention_row.addWidget(log_retention_label)
         log_retention_row.addStretch(1)
@@ -6245,86 +5872,50 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         # Themes (Page 3)
         sa, f = _scrollable()
         content_stack.addWidget(sa)
-        f.addWidget(_sec("COLOR THEME"))
-        _theme_settings = actions.load_ui_settings()
-        self._color_theme_combo = QComboBox()
-        for _key, _label in color_themes.theme_choices():
-            self._color_theme_combo.addItem(_label, _key)
-        _saved_theme = _theme_settings.get(color_themes.THEME_SETTING)
-        _index = self._color_theme_combo.findData(_saved_theme)
-        self._color_theme_combo.setCurrentIndex(max(0, _index))
-        self._color_theme_combo.setAccessibleName("Color theme")
-        f.addWidget(self._color_theme_combo)
+        f.addWidget(_sec("THEME"))
+        _theme_hint = QLabel("Pick a theme. It is used the next time the application starts.")
+        _theme_hint.setWordWrap(True)
+        _theme_hint.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(_theme_hint)
 
-        self._theme_preview = _ThemePreview(_THEME)
-        f.addWidget(self._theme_preview)
+        _gallery = QGridLayout()
+        _gallery.setContentsMargins(0, 4, 0, 4)
+        _gallery.setHorizontalSpacing(12)
+        _gallery.setVerticalSpacing(12)
+        _saved_theme = color_themes.theme_name(actions.load_ui_settings())
+        self._theme_cards = {}
+        _group = QButtonGroup(self)
+        _group.setExclusive(True)
+        for _i, (_key, _label) in enumerate(color_themes.theme_choices()):
+            _card = _ThemeCard(_key, _label, color_themes.resolve_colors({color_themes.THEME_SETTING: _key}))
+            _card.setChecked(_key == _saved_theme)
+            _card.clicked.connect(lambda _checked=False, key=_key: self._on_theme_card_clicked(key))
+            _group.addButton(_card)
+            self._theme_cards[_key] = _card
+            _gallery.addWidget(_card, _i // 3, _i % 3)
+        for _column in range(3):
+            _gallery.setColumnStretch(_column, 1)
+        f.addLayout(_gallery)
 
-        _accent_row = QHBoxLayout()
-        _accent_row.addWidget(QLabel("Accent Color"))
-        _accent_row.addStretch(1)
-        self._accent_button = QPushButton(_THEME["ACCENT"].upper())
-        self._accent_button.setToolTip("Replace the accent color of the selected theme.")
-        self._accent_button.clicked.connect(self._choose_accent_color)
-        _accent_row.addWidget(self._accent_button)
-        self._accent_reset_button = QPushButton("Reset")
-        self._accent_reset_button.setToolTip("Go back to the accent color of the selected theme.")
-        self._accent_reset_button.clicked.connect(self._reset_accent_color)
-        _accent_row.addWidget(self._accent_reset_button)
-        f.addLayout(_accent_row)
-
-        self._color_theme_hint = QLabel()
-        self._color_theme_hint.setWordWrap(True)
-        self._color_theme_hint.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
-        f.addWidget(self._color_theme_hint)
-        self._refresh_color_theme_controls()
-        self._color_theme_combo.currentIndexChanged.connect(self._on_color_theme_changed)
-
-        f.addWidget(_sec("BACKGROUND"))
-        config = themes_mod.load_background()
-        self._theme_enabled = QCheckBox('Enable Custom Background')
-        self._theme_enabled.setChecked(config['enabled'])
-        self._theme_enabled.toggled.connect(self._on_background_changed)
-        f.addWidget(self._theme_enabled)
-
-        background_row = QHBoxLayout()
-        self._theme_path = QLineEdit(config['path'])
-        self._theme_path.setPlaceholderText('Image, GIF, or video path')
-        self._theme_path.editingFinished.connect(self._on_background_changed)
-        background_row.addWidget(self._theme_path, 1)
-        browse = QPushButton('Browse')
-        browse.clicked.connect(self._browse_background)
-        background_row.addWidget(browse)
-        f.addLayout(background_row)
-
-        f.addWidget(QLabel('Opacity Blur'))
-        blur_row = QHBoxLayout()
-        self._theme_blur = QSlider(Qt.Orientation.Horizontal)
-        self._theme_blur.setRange(0, 100)
-        self._theme_blur.setValue(config['blur'])
-        self._theme_blur.setAccessibleName('Opacity Blur')
-        self._theme_blur.valueChanged.connect(self._on_background_blur)
-        blur_row.addWidget(self._theme_blur, 1)
-        self._theme_blur_label = QLabel(f"{config['blur']}%")
-        self._theme_blur_label.setFixedWidth(38)
-        blur_row.addWidget(self._theme_blur_label)
-        f.addLayout(blur_row)
-        self._theme_save_timer = QTimer(self)
-        self._theme_save_timer.setSingleShot(True)
-        self._theme_save_timer.timeout.connect(self._save_background_blur)
-        self._theme_color_buttons = {}
-        for key, title in (('text', 'TEXT'), ('muted', 'MUTED'),
-                           ('outline', 'Outline Color'), ('tint', 'Surface Tint')):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(title))
-            row.addStretch(1)
-            button = QPushButton(config[key].upper())
-            button.clicked.connect(lambda checked=False, name=key: self._choose_theme_color(name))
-            self._theme_color_buttons[key] = button
-            row.addWidget(button)
-            f.addLayout(row)
-        reset_theme_button = QPushButton('Reset Theme')
-        reset_theme_button.clicked.connect(self._reset_theme)
-        f.addWidget(reset_theme_button)
+        self._theme_restart_banner = QFrame()
+        self._theme_restart_banner.setObjectName("themeRestartBanner")
+        self._theme_restart_banner.setStyleSheet(
+            f"QFrame#themeRestartBanner {{ background: {ACCENT_TINT}; border: 1px solid {ACCENT_TINT_LINE}; "
+            f"border-radius: 10px; }}"
+        )
+        _banner_row = QHBoxLayout(self._theme_restart_banner)
+        _banner_row.setContentsMargins(14, 10, 10, 10)
+        _banner_label = QLabel("Restart to apply")
+        _banner_label.setStyleSheet(f"color: {TEXT}; font-weight: 600; background: transparent; border: 0;")
+        _banner_row.addWidget(_banner_label)
+        _banner_row.addStretch(1)
+        self._theme_restart_btn = QPushButton("Restart now")
+        self._theme_restart_btn.setObjectName("primary")
+        self._theme_restart_btn.setFixedHeight(30)
+        self._theme_restart_btn.clicked.connect(self._restart_for_theme)
+        _banner_row.addWidget(self._theme_restart_btn)
+        f.addWidget(self._theme_restart_banner)
+        self._refresh_theme_restart_banner()
         f.addStretch(1)
 
         # Misc (Page 4)
@@ -6414,13 +6005,13 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         f.addWidget(_import_btn)
 
         f.addWidget(_sec("AUTO BACKUP"))
-        self._sett_auto_backup_chk = _chk(
-            auto_backup_mod.ENABLED_SETTING, "Back up accounts automatically",
-            "Saves a protected backup when the app starts and after accounts are added or removed\n"
-            f"(at most once an hour). The newest {auto_backup_mod.KEEP} are kept.",
-            default=True,
+        _auto_backup_info = QLabel(
+            f"Accounts are backed up automatically every 24 hours. The newest {auto_backup_mod.KEEP} "
+            "automatic backups are kept; backups made with Backup now are never deleted."
         )
-        f.addWidget(self._sett_auto_backup_chk)
+        _auto_backup_info.setWordWrap(True)
+        _auto_backup_info.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        f.addWidget(_auto_backup_info)
         self._backup_status_lbl = QLabel()
         self._backup_status_lbl.setWordWrap(True)
         self._backup_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
@@ -7676,43 +7267,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             if not result:
                 self._show_operation_error(result)
 
-    def _show_whats_new(self) -> None:
-        """After an update: show what changed, once per version (offline, notes are built in)."""
-        try:
-            notes = whats_new_mod.pending(APP_VERSION, used_before=bool(getattr(self.manager, "accounts", None)))
-        except Exception as exc:
-            print(f"[WARNING] What's new: {exc}")
-            return
-        if not notes:
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("What's new")
-        dlg.setMinimumSize(420, 300)
-        dlg.resize(460, 380)
-        dlg.setStyleSheet(
-            f"QDialog {{ background: {BG}; }} QLabel {{ color: {TEXT}; background: transparent; }}"
-        )
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(22, 18, 22, 18)
-        lay.setSpacing(10)
-        hdr = QLabel(f"Updated to v{APP_VERSION}")
-        hdr.setStyleSheet("font-size: 16px; font-weight: 700;")
-        lay.addWidget(hdr)
-        view = QTextEdit()
-        view.setReadOnly(True)
-        view.setAccessibleName("What's new")
-        view.setMarkdown("\n\n".join(text for _version, text in notes))
-        view.setStyleSheet(
-            f"QTextEdit {{ background: {INPUT}; color: {TEXT}; border: 1px solid {LINE}; font-size: 12px; }}"
-        )
-        lay.addWidget(view, 1)
-        ok = QPushButton("OK")
-        ok.setObjectName("primary")
-        ok.setFixedHeight(32)
-        ok.clicked.connect(dlg.accept)
-        lay.addWidget(ok)
-        dlg.exec()
-
     def _on_update_available(self, latest_version: str) -> None:
         self._show_update_dialog(latest_version)
 
@@ -7735,8 +7289,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 border: 1px solid {LINE}; border-radius: 0;
                 padding: 6px 14px; font-size: 12px;
             }}
-            QPushButton:hover    {{ background: {SELECT}; border-color: #444; }}
-            QPushButton:disabled {{ color: #666; }}
+            QPushButton:hover    {{ background: {SELECT}; border-color: {HOVER}; }}
+            QPushButton:disabled {{ color: {MUTED}; }}
         """)
 
         lay = QVBoxLayout(dlg)
@@ -7745,7 +7299,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         # Header
         hdr = QLabel("Update Required")
-        hdr.setStyleSheet("font-size: 15px; font-weight: 700; color: #EDEDED;")
+        hdr.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {TEXT};")
         lay.addWidget(hdr)
 
         # Version Info Card
@@ -8082,7 +7636,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
 
         def _worker():
             try:
-                count = len(presence_mod.get_roblox_processes(max_age=1.0))
+                headless = headless_manager_mod.get_active_manager()
+                hidden = headless.get_hidden_pids() if headless is not None else set()
+                count = len(presence_mod.game_window_pids(hidden))
             except Exception:
                 count = -1
             try:
@@ -8152,7 +7708,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             print("[INFO] RAM boost started")
             while not self._ram_boost_stop:
                 try:
-                    limit_mb = int(actions.load_ui_settings().get("optimize_roblox_ram_limit_mb", 750))
+                    limit_mb = int(actions.load_ui_settings().get("optimize_roblox_ram_limit_mb", RAM_LIMIT_DEFAULT_MB))
                     current_pids = set()
                     for proc in psutil.process_iter(["pid", "name"]):
                         if proc.info["name"] and proc.info["name"].lower() == "robloxplayerbeta.exe":
@@ -8562,43 +8118,33 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
 
     # Auto backup
-    def _accounts_fingerprint(self) -> str:
-        names = sorted(self.manager.accounts.keys())
-        return f"{len(names)}:{hash(tuple(names))}" if names else ""
-
     def _start_auto_backup(self) -> None:
-        self._backup_fingerprint = ""
+        # Always on: an automatic backup every 24 hours, checked every 10 minutes.
         self._backup_running = False
         timer = QTimer(self)
         timer.setInterval(10 * 60 * 1000)
         timer.timeout.connect(self._auto_backup_tick)
         timer.start()
         self._auto_backup_timer = timer
-        if auto_backup_mod.is_enabled():
-            self._run_backup("start")
+        self._auto_backup_tick()
 
     def _auto_backup_tick(self) -> None:
-        if not auto_backup_mod.is_enabled():
-            return
-        if auto_backup_mod.backup_due(self._accounts_fingerprint(), getattr(self, "_backup_fingerprint", "")):
-            self._run_backup("accounts changed")
+        if auto_backup_mod.backup_due():
+            self._run_backup("every 24 hours", automatic=True)
 
-    def _run_backup(self, reason: str, on_done=None) -> None:
+    def _run_backup(self, reason: str, on_done=None, automatic: bool = False) -> None:
         if getattr(self, "_backup_running", False):
             return
         self._backup_running = True
-        fingerprint = self._accounts_fingerprint()
         manager = self.manager
 
         def _worker():
             try:
-                result = auto_backup_mod.make_backup(manager, reason)
+                result = auto_backup_mod.make_backup(manager, reason, automatic=automatic)
             except Exception as exc:
                 result = OperationResult.failure("BACKUP_FAILED", "Backup Failed", str(exc))
             self._backup_running = False
-            if result:
-                self._backup_fingerprint = fingerprint
-            elif result.code != "BACKUP_NO_ACCOUNTS":
+            if not result and result.code != "BACKUP_NO_ACCOUNTS":
                 print(f"[WARNING] Accounts backup failed: {result.message}")
             if on_done is not None:
                 try:
@@ -8633,11 +8179,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             return
         backups = auto_backup_mod.list_backups()
         portable = auto_backup_mod.has_user_password(self.manager)
+        automatic = sum(1 for backup in backups if backup.get("automatic"))
         lines = [
             ("Backups use your backup password and can be restored on any PC."
              if portable else
-             "Backups open on this PC only. Set a backup password to restore them on another PC."),
-            (f"Newest: {backups[0]['when']:%Y-%m-%d %H:%M} ({backups[0]['count']} accounts) · {len(backups)} kept"
+             "Backups open on this PC only. Set a backup password (or export with one) "
+             "to restore them on another PC."),
+            (f"Newest: {backups[0]['when']:%Y-%m-%d %H:%M} ({backups[0]['count']} accounts) · "
+             f"{automatic} automatic, {len(backups) - automatic} manual"
              if backups else "No backups yet."),
         ]
         extra = str(actions.get_ui_setting(auto_backup_mod.EXTRA_FOLDER_SETTING, "") or "")
@@ -8766,6 +8315,8 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._show_operation_error(result)
             return
         print(f"[INFO] Exported {result.data['count']} account(s) to {path}")
+        auto_backup_mod.remember_export_password(self.manager, password)
+        self._refresh_backup_status()
         _show_info(
             self, "Export Accounts",
             f"{result.message}\n\nKeep the file and its password safe. "
@@ -9314,12 +8865,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         private_manager = getattr(self, '_private_server_manager', None)
         if private_manager is not None and isValid(private_manager):
             private_manager.close()
-        if hasattr(self, '_background'):
-            self._background.stop()
-            QApplication.instance().removeEventFilter(self._background)
-        if hasattr(self, '_theme_save_timer') and self._theme_save_timer.isActive():
-            self._theme_save_timer.stop()
-            self._save_background_blur()
         if self._shutdown_cleanup_done:
             return
         self._shutdown_cleanup_done = True
@@ -10429,7 +9974,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         ram_row.addStretch(1)
         self._sett_ram_spin = QSpinBox()
         self._sett_ram_spin.setRange(100, 8192)
-        self._sett_ram_spin.setValue(int(S.get("optimize_roblox_ram_limit_mb", 750)))
+        self._sett_ram_spin.setValue(int(S.get("optimize_roblox_ram_limit_mb", RAM_LIMIT_DEFAULT_MB)))
         self._sett_ram_spin.setSuffix(" MB")
         self._sett_ram_spin.setFixedWidth(110)
         self._sett_ram_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -11035,6 +10580,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
     def _update_encryption_badge(self):
         text, color = actions.get_encryption_status(self.manager)
         color = {"#90EE90": "#34D399", "#87CEEB": "#60A5FA", "#FFB6C1": "#F87171"}.get(color, color)
+        color = _status_color(color) if color else color
         badge = getattr(self, "_enc_badge", None)
         if badge is None or not isValid(badge):
             return
@@ -11709,13 +11255,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             btn.setText("Some left!")
             print(f"[WARNING] {result.message} {getattr(result, 'detail', '')}")
         btn.setEnabled(True)
-        # Nothing reopens behind your back: Auto-Rejoin waits, the queue pauses.
+        # Auto-Rejoin waits a minute so nothing reopens behind your back; a
+        # running batch queue moves on to its next batch once the clients are gone.
         ar.pause_all()
         q = getattr(self, "_launch_queue", None)
-        if q and not q.get("force"):  # Next Batch also uses Kill All; that one moves on
-            q["paused"] = True
-            q["pause_reason"] = "Kill All pressed; press Resume to continue"
-            print("[INFO] Batch queue paused by Kill All Roblox. Press Resume to continue.")
+        if q and not q.get("force"):  # Next Batch also uses Kill All and already moves on
+            print("[INFO] Kill All Roblox: the batch queue moves on to the next batch.")
         delay = 5000 if getattr(self, "_kill_unknown_until", 0.0) > time.monotonic() else 1800
 
         def _reset():
@@ -11858,10 +11403,9 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             now = time.monotonic()
             q["phase"], q["phase_since"], q["empty_polls"] = "waiting", now, 0
             if gave_up or security:
-                # Something is wrong that a retry won't fix: stop instead of racing through every batch.
-                q["paused"] = True
-                q["pause_reason"] = f"Batch {q['batch']} failed right away: {result.message or result.code}"
-                print(f"[WARNING] Batch queue paused. {q['pause_reason']} Fix it, then press Resume.")
+                # A retry won't fix these; they are listed above. The queue never pauses itself.
+                print(f"[WARNING] Batch queue: batch {q['batch']} failed right away "
+                      f"({result.message or result.code}). Moving on to the next batch.")
             else:
                 # Roblox trouble (installer/update/network): give it a moment, then carry on.
                 q["cooldown_until"] = now + self._QUEUE_COOLDOWN
@@ -13930,9 +13474,12 @@ def main(icon_path: str | None = None, *, smoke_test: bool = False) -> int:
     diagnostics.set_startup_stage("creating QApplication")
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Roblox Account Manager")
-    app.setFont(QFont("Segoe UI", 10))
+    _app_font = QFont("Segoe UI", 10)
+    _app_font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    _app_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    app.setFont(_app_font)
     apply_palette(app)
-    motion.install(app, TEXT, actions.load_ui_settings())
+    motion.install(app, TEXT, actions.load_ui_settings(), glow=FG_ACCENT)
     diagnostics.set_startup_stage("QApplication ready")
     splash.status("Starting", 0.2)
 

@@ -28,6 +28,7 @@ class AccountsBackupUiTests(unittest.TestCase):
             _ask_backup_password=MagicMock(return_value=PASSWORD),
             _show_operation_error=MagicMock(),
             _refresh_account_list=MagicMock(),
+            _refresh_backup_status=MagicMock(),
         )
         self.enterContext(patch.object(ui, "_show_info", side_effect=lambda parent, title, message: self.shown.append((title, message))))
         self.enterContext(patch.object(ui, "_show_error", side_effect=lambda parent, title, message: self.shown.append((title, message))))
@@ -48,6 +49,11 @@ class AccountsBackupUiTests(unittest.TestCase):
         self.assertTrue(os.path.exists(self.path))
         self.assertTrue(account_backup.read_backup(self.path, PASSWORD))
         self.assertEqual(self.shown[-1][0], "Export Accounts")
+
+    def test_export_password_is_remembered_for_automatic_backups(self):
+        with patch.object(ui.auto_backup_mod, "remember_export_password") as remember:
+            self.export()
+        remember.assert_called_once_with(self.manager, PASSWORD)
 
     def test_export_without_accounts_explains_why(self):
         self.manager.accounts = {}

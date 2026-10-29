@@ -37,7 +37,7 @@ _HEALTH_STOP = threading.Event()
 _HEALTH_THREAD = None
 _SESSION_LOG_HANDLE = None
 
-DEFAULT_LOG_RETENTION = 20
+DEFAULT_LOG_RETENTION = 10
 _LOG_FILE_GROUPS = (
     ("logs", ("session-", "hang-", "update-")),
     ("crash_logs", ("crash-",)),
@@ -276,6 +276,14 @@ def prune_old_logs(keep: int, protect: str = "") -> int:
     return removed
 
 
+def prune_after_new_log() -> None:
+    """A log file was just made: drop the oldest beyond "Log Files to Keep"."""
+    try:
+        prune_old_logs(get_log_retention(), protect=_SESSION_LOG_PATH)
+    except Exception:
+        pass
+
+
 def report_ui_stall(stalled_for: float) -> str:
     # Capture stacks without local values or source lines that may hold secrets.
     try:
@@ -300,6 +308,7 @@ def report_ui_stall(stalled_for: float) -> str:
             frames.clear()
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(redact("\n".join(lines)))
+        prune_after_new_log()
         record_message(f"UI hang report saved: {path}", "WARNING")
         return path
     except Exception:
@@ -379,6 +388,7 @@ def report_exception(
     report = "\n".join(details)
     if crash_path:
         _safe_write(crash_path, report)
+        prune_after_new_log()
     _record_line(
         f"[ERROR] {context}: {exception_type.__name__}: {redact(exception)}",
         "diagnostics",

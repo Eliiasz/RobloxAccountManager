@@ -23,6 +23,7 @@ import win32api
 
 from classes.operation_result import OperationResult
 import features.delta_patch as delta_patch
+from features import diagnostics
 from utils.app_paths import get_data_dir
 from utils.version import APP_VERSION
 
@@ -237,7 +238,10 @@ def _build_update_log_path() -> str:
     log_dir = os.path.join(get_data_dir(), "logs")
     os.makedirs(log_dir, exist_ok=True)
     stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    return os.path.join(log_dir, f"update-{stamp}.log")
+    path = os.path.join(log_dir, f"update-{stamp}.log")
+    open(path, "a", encoding="utf-8").close()
+    diagnostics.prune_after_new_log()
+    return path
 
 
 def _system_powershell() -> str:

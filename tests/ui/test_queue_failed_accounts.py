@@ -63,14 +63,15 @@ class QueueFailedAccountsTests(unittest.TestCase):
         self.assertFalse(q["paused"])
         self.assertGreater(q["cooldown_until"], time.monotonic())
 
-    def test_a_batch_that_fully_failed_for_another_reason_pauses_instead_of_racing(self):
+    def test_a_batch_that_fully_failed_for_another_reason_moves_on(self):
         window = _window(_queue())
         with patch.object(ui.actions, "get_ui_setting", return_value=2):
             window._note_queue_failures(self.failure(["a", "b"], ["a", "b"],
                                                      {"a": "LAUNCH_ACCOUNT_ID_MISSING", "b": "LAUNCH_ACCOUNT_ID_MISSING"}))
         q = window._launch_queue
-        self.assertTrue(q["paused"])
-        self.assertIn("failed right away", q["pause_reason"])
+        self.assertFalse(q["paused"])
+        self.assertEqual(q["phase"], "waiting")
+        self.assertEqual(q["failed"], ["a", "b"])
 
     def test_nothing_is_collected_when_no_queue_runs(self):
         self.assertFalse(_window(None)._note_queue_failures(self.failure(["a"], ["a"], {})))
