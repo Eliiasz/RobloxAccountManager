@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QSizeGrip, QSizePolicy, QDoubleSpinBox, QSlider, QSpinBox, QStackedWidget, QSystemTrayIcon,
     QTabWidget, QTextEdit, QTreeWidget, QTreeWidgetItem,
     QToolButton, QVBoxLayout, QWidget,
-    QStyle, QStyleOptionButton, QStyledItemDelegate, QStyleOptionViewItem,
+    QStyle, QStyledItemDelegate, QStyleOptionViewItem,
 )
 from shiboken6 import isValid
 
