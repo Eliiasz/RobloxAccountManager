@@ -374,9 +374,9 @@ class WebSocketServer:
         if not cookie:
             return {"ok": False, "error": f"No cookie for account: {account}"}
 
-        presence = RobloxAPI.get_player_presence(user_id, cookie)
-        if not presence:
-            return {"ok": False, "error": "Failed to fetch player presence"}
+        # A failed presence check does not stop the join: Roblox finds the
+        # user's server itself.
+        presence = RobloxAPI.get_player_presence(user_id, cookie) or {"in_game": True}
         if not presence.get("in_game"):
             return {
                 "ok": False,

@@ -447,6 +447,10 @@ FIELD_GLOW = color_themes.mix(LINE, FG_ACCENT, 0.65)
 TITLE_ICON_ACTIVE = TEXT if THEME_IS_LIGHT else "#FFFFFF"
 SCROLL_HANDLE_HOVER = color_themes.mix(PANEL, TEXT, 0.28)
 ONLINE_GREEN = "#1E9E57" if THEME_IS_LIGHT else "#2ECC71"
+# Accounts whose cookie Roblox no longer accepts (locked, banned, signed out).
+DEAD_RED = "#C93A3A" if THEME_IS_LIGHT else "#F06B6B"
+DEAD_COOKIE_TIP = ("Roblox no longer accepts this account's cookie (signed out, locked or banned).\n"
+                   "Sign in to it again, or check it in Account Health.")
 
 
 def _status_color(color: str) -> str:
@@ -1697,6 +1701,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._bridge.roblox_download_done.connect(self._on_roblox_download_done)
         self._bridge.presence_update.connect(self._on_presence_update)
         self._bridge.cookie_validated.connect(self._on_cookie_validated)
+        self.manager.on_cookie_status = self._bridge.cookie_validated.emit
         self._bridge.console_wakeup.connect(self._drain_console_queue)
         diagnostics.set_console_wakeup(self._bridge.console_wakeup.emit)
         self._bridge.update_available.connect(self._on_update_available)
@@ -1734,11 +1739,11 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._cv_mod = cookie_validator_mod
         self._animations_on = motion.animations_enabled(actions.load_ui_settings())
         self._cv_validator = None
-        self._invalid_badges: dict[str, QLabel] = {}
         self._account_avatar_containers: dict[str, QWidget] = {}
         self._account_name_labels: dict[str, QLabel] = {}
         self._account_rows: dict[str, QWidget] = {}
         self._placeholder_pixmaps: dict[int, QPixmap] = {}
+        self._ghost_pixmaps: dict[int, QPixmap] = {}
 
         self._avatar_labels: dict[str, QLabel] = {}
         self._current_group: str | None = None
@@ -7449,36 +7454,37 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._cv_validator.start()
 
     def _on_cookie_validated(self, username: str, status: str) -> None:
-        self._apply_cookie_status_to_row(
-            username,
-            status == self._cv_mod.INVALID,
-        )
+        # The saved status decides: an "unknown" result leaves it unchanged.
+        self._apply_cookie_status_to_row(username, self._is_account_invalid(username))
 
     def _apply_cookie_status_to_row(self, username: str, flagged: bool) -> None:
-        badge = self._invalid_badges.get(username)
-        if badge is None and flagged:
-            container = self._account_avatar_containers.get(username)
-            if container is not None:
-                badge = self._create_invalid_badge(container)
-                self._invalid_badges[username] = badge
-        if badge is not None:
-            badge.setVisible(flagged)
-        name_label = self._account_name_labels.get(username)
-        if name_label is not None:
-            name_label.setStyleSheet(
-                "color: #E8A020; font-style: italic;" if flagged else ""
-            )
-            name_label.setToolTip(
-                "Cookie validation received repeated unauthorized responses.\n"
-                "You can still try launching this account."
-                if flagged else ""
-            )
+        av_lbl = self._avatar_labels.get(username)
+        if av_lbl is not None and isValid(av_lbl):
+            if flagged:
+                av_lbl.setPixmap(self._make_ghost_pixmap(ROW_AVATAR_SIZE))
+            elif self._ghost_pixmaps and av_lbl.pixmap().cacheKey() in {
+                    p.cacheKey() for p in self._ghost_pixmaps.values()}:
+                av_lbl.setPixmap(self._make_placeholder_pixmap(ROW_AVATAR_SIZE))
+                self._load_avatars_async()  # bring the real avatar back
+            av_lbl.setToolTip(DEAD_COOKIE_TIP if flagged else "")
+        self._style_account_name(self._account_name_labels.get(username), flagged)
+        status = self._status_labels.get(username)
+        if status is not None and isValid(status[0]) and isValid(status[1]):
+            self._apply_account_status(
+                status[0], status[1], username in self._online_usernames, dead=flagged)
         row = self._account_rows.get(username)
         if row is not None:
             row.setStyleSheet(
                 "QWidget { background: rgba(200, 50, 50, 0.06); }"
                 if flagged else ""
             )
+
+    @staticmethod
+    def _style_account_name(name_label: QLabel | None, flagged: bool) -> None:
+        if name_label is None or not isValid(name_label):
+            return
+        name_label.setStyleSheet(f"color: {DEAD_RED}; text-decoration: line-through;" if flagged else "")
+        name_label.setToolTip(DEAD_COOKIE_TIP if flagged else "")
 
     def _is_account_invalid(self, username: str) -> bool:
         data = self.manager.accounts.get(username)
@@ -7544,14 +7550,22 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             dot.setVisible(username in self._online_usernames)
         for username, (dot, text) in getattr(self, "_status_labels", {}).items():
             if isValid(dot) and isValid(text):
-                self._apply_account_status(dot, text, username in self._online_usernames)
+                self._apply_account_status(dot, text, username in self._online_usernames,
+                                           dead=self._is_account_invalid(username))
 
     @staticmethod
-    def _apply_account_status(dot: QLabel, text: QLabel, online: bool) -> None:
+    def _apply_account_status(dot: QLabel, text: QLabel, online: bool, dead: bool = False) -> None:
+        if dead and not online:
+            dot.setStyleSheet(f"background: {DEAD_RED}; border-radius: 4px;")
+            text.setText("Cookie dead · sign in again")
+            text.setStyleSheet(f"color: {DEAD_RED};")
+            text.setToolTip(DEAD_COOKIE_TIP)
+            return
         color = ONLINE_GREEN if online else "#6B7280"
         dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
         text.setText("In game" if online else "Idle")
         text.setStyleSheet(f"color: {ONLINE_GREEN if online else MUTED};")
+        text.setToolTip("")
 
     _TOTAL_RAM_MB = None
 
@@ -10050,25 +10064,42 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._placeholder_pixmaps[size] = result
         return result
 
-    @staticmethod
-    def _create_invalid_badge(container: QWidget) -> QLabel:
-        badge_size = 6
-        ring = 1
-        badge = QLabel(container)
-        badge.setFixedSize(badge_size + ring * 2, badge_size + ring * 2)
-        badge.move(0, 0)
-        badge.setStyleSheet(f"""
-            QLabel {{
-                background: #E8A020;
-                border-radius: {(badge_size + ring * 2) // 2}px;
-                border: {ring}px solid {BG};
-            }}
-        """)
-        badge.setToolTip(
-            "Cookie validation received repeated unauthorized responses.\n"
-            "You can still try launching this account."
-        )
-        return badge
+    def _make_ghost_pixmap(self, size: int = avatars.AVATAR_SIZE) -> QPixmap: # Dead cookie
+        cached = self._ghost_pixmaps.get(size)
+        if cached is not None:
+            return cached
+        result = QPixmap(size, size)
+        result.fill(Qt.GlobalColor.transparent)
+        p = QPainter(result)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(SELECT))
+        p.drawEllipse(0, 0, size, size)
+
+        # Ghost: round head, straight sides, three scallops at the bottom.
+        s = size / 36.0
+        left, right, top, bottom = 10 * s, 26 * s, 8 * s, 28 * s
+        width = right - left
+        body = QPainterPath()
+        body.moveTo(left, bottom)
+        body.lineTo(left, top + width / 2)
+        body.arcTo(left, top, width, width, 180, -180)
+        body.lineTo(right, bottom)
+        wave = width / 3
+        for i in range(3):
+            x = right - i * wave
+            body.quadTo(x - wave / 2, bottom - 3.5 * s, x - wave, bottom)
+        body.closeSubpath()
+        p.setBrush(QColor(DEAD_RED))
+        p.drawPath(body)
+
+        p.setBrush(QColor(SELECT))
+        eye_w, eye_h = 2.6 * s, 3.6 * s
+        for cx in (15 * s, 21 * s):
+            p.drawEllipse(QRectF(cx - eye_w / 2, 15 * s, eye_w, eye_h))
+        p.end()
+        self._ghost_pixmaps[size] = result
+        return result
 
     def _open_private_server_manager(self):
         dialog = getattr(self, '_private_server_manager', None)
@@ -10132,7 +10163,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         self._presence_dots.clear()
         self._activity_widgets.clear()
         self._activity_labels.clear()
-        self._invalid_badges.clear()
         self._account_avatar_containers.clear()
         self._account_name_labels.clear()
         self._account_rows.clear()
@@ -10194,7 +10224,12 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             av_lbl.setAlignment(
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
             )
-            av_lbl.setPixmap(self._make_placeholder_pixmap(AV))
+            flagged = self._cv_mod.is_flagged(data) if isinstance(data, dict) else False
+            if flagged:
+                av_lbl.setPixmap(self._make_ghost_pixmap(AV))
+                av_lbl.setToolTip(DEAD_COOKIE_TIP)
+            else:
+                av_lbl.setPixmap(self._make_placeholder_pixmap(AV))
 
             DOT_SIZE = 9
             RING = 2
@@ -10216,12 +10251,6 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self._avatar_labels[username] = av_lbl
             self._account_avatar_containers[username] = av_container
 
-            flagged = self._cv_mod.is_flagged(data) if isinstance(data, dict) else False
-
-            if flagged:
-                bad_lbl = self._create_invalid_badge(av_container)
-                self._invalid_badges[username] = bad_lbl
-
             text_col = QVBoxLayout()
             text_col.setContentsMargins(0, 0, 0, 0)
             text_col.setSpacing(0)
@@ -10233,12 +10262,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             name_lbl = QLabel(username)
             name_lbl.setObjectName("accountName")
             name_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            if flagged:
-                name_lbl.setStyleSheet("color: #E8A020; font-style: italic;")
-                name_lbl.setToolTip(
-                    "Cookie validation received repeated unauthorized responses.\n"
-                    "You can still try launching this account."
-                )
+            self._style_account_name(name_lbl, flagged)
             top_line.addWidget(name_lbl)
             self._account_name_labels[username] = name_lbl
 
@@ -10298,7 +10322,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             status_dot.setFixedSize(8, 8)
             status_text = QLabel()
             status_text.setObjectName("accountStatus")
-            self._apply_account_status(status_dot, status_text, is_online)
+            self._apply_account_status(status_dot, status_text, is_online, dead=flagged)
             status_line.addWidget(status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
             status_line.addWidget(status_text)
             status_line.addStretch(1)
@@ -10500,7 +10524,7 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             if pix.isNull():
                 return
             lbl = self._avatar_labels.get(username)
-            if lbl is not None:
+            if lbl is not None and not self._is_account_invalid(username):
                 lbl.setPixmap(self._make_circular_pixmap(bytes(img_bytes), ROW_AVATAR_SIZE))
             ar_lbl = getattr(self, "_ar_avatar_labels", {}).get(username)
             if ar_lbl is not None:
@@ -12918,7 +12942,7 @@ class _AutoRejoinAddWindow(QDialog):
         self._edit_mode = edit_account is not None
         self._edit_account = edit_account
         self._edit_config = edit_config or {}
-        self._validation_rows: dict[str, tuple[QWidget, QLabel, QLabel]] = {}
+        self._validation_rows: dict[str, tuple[QWidget, QLabel]] = {}
 
         self.setWindowTitle("Edit Auto-Rejoin" if self._edit_mode else "Add Account to Auto-Rejoin")
         self.setMinimumSize(420 if self._edit_mode else 740, 480)
@@ -13291,7 +13315,6 @@ class _AutoRejoinAddWindow(QDialog):
                 if par and hasattr(par, "_make_placeholder_pixmap"):
                     av.setPixmap(par._make_placeholder_pixmap(AV))
             rl.addWidget(av_container)
-            badge = AccountManagerUIQt._create_invalid_badge(av_container)
 
             name_lbl = QLabel(username)
             name_lbl.setObjectName("accountName")
@@ -13313,7 +13336,7 @@ class _AutoRejoinAddWindow(QDialog):
 
             self._acc_list.addItem(item)
             self._acc_list.setItemWidget(item, row)
-            self._validation_rows[username] = (row, name_lbl, badge)
+            self._validation_rows[username] = (row, name_lbl)
             flagged = cookie_validator_mod.is_flagged(data) if isinstance(data, dict) else False
             self._apply_cookie_status_to_row(username, flagged)
 
@@ -13324,10 +13347,8 @@ class _AutoRejoinAddWindow(QDialog):
         widgets = self._validation_rows.get(username)
         if widgets is None:
             return
-        row, name_label, badge = widgets
-        badge.setVisible(flagged)
-        name_label.setStyleSheet("color: #E8A020; font-style: italic;" if flagged else "")
-        name_label.setToolTip(badge.toolTip() if flagged else "")
+        row, name_label = widgets
+        AccountManagerUIQt._style_account_name(name_label, flagged)
         row.setStyleSheet(
             "QWidget { background: rgba(200, 50, 50, 0.06); }" if flagged else ""
         )

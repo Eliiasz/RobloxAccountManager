@@ -666,17 +666,12 @@ def join_user(manager, usernames: list[str] | str, target_username: str, on_done
                 on_done(False, OperationResult.failure("COOKIE_MISSING", "Account Cookie Missing", msg))
                 return
             if not presence:
-                msg = f"Could not fetch presence data for {target_username}."
-                print(f"[WARNING] join_user: {msg}")
-                on_done(False, OperationResult.failure(
-                    "PRESENCE_REQUEST_FAILED",
-                    "Presence Could Not Be Checked",
-                    msg,
-                    retryable=True,
-                ))
-                return
-
-            if not presence.get("in_game", False):
+                # The check is only a shortcut for an offline user. Roblox
+                # finds the server itself when each account joins, so a failed
+                # check (for example 403 for these accounts) does not stop it.
+                print(f"[WARNING] join_user: Could not check whether {target_username} is in a game; "
+                      "asking Roblox to join them anyway.")
+            elif not presence.get("in_game", False):
                 status = presence.get("status", 0)
                 if status == 0:
                     msg = (f"{target_username} is offline, or their privacy hides whether they are online "
@@ -691,7 +686,7 @@ def join_user(manager, usernames: list[str] | str, target_username: str, on_done
                 ))
                 return
 
-            if not presence.get("place_id"):
+            elif not presence.get("place_id"):
                 # Roblox decides per account when it joins; its own message
                 # shows in the game window if "Who can join me?" blocks it.
                 print(f"[INFO] join_user: {target_username}'s server is hidden from these accounts; "

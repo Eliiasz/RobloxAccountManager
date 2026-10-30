@@ -108,6 +108,25 @@ def _check(cookie: str, session: requests.Session) -> tuple[str, str, bool]:
     return UNKNOWN, last_detail, False
 
 
+def recheck(manager, username: str) -> str:
+    """Check one account now, the same way as the full check (used after
+    Roblox refused its cookie at launch). Saves a changed status."""
+    data = manager.accounts.get(username)
+    cookie = data.get("cookie", "") if isinstance(data, dict) else ""
+    if not cookie:
+        return UNKNOWN
+    with requests.Session() as session:
+        status, _detail, _limited = _check(cookie, session)
+    if status == INVALID:
+        print(f"[WARNING] Cookie check: {username}'s cookie no longer works. Sign in to this account again.")
+    if status != UNKNOWN and _set_status(manager, username, status):
+        try:
+            manager.save_accounts()
+        except Exception as exc:
+            print(f"[WARNING] Cookie status could not be saved: {exc}")
+    return status
+
+
 class CookieValidator:
     def __init__(
         self,

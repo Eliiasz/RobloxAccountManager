@@ -56,6 +56,14 @@ class LaunchSettingsTests(unittest.TestCase):
         self.assertTrue(result['ok'], result)
         self.assertEqual(self.manager.launch_roblox.call_args.kwargs['follow_user_id'], '7')
 
+    def test_websocket_join_user_works_when_presence_is_refused(self):
+        with patch('features.websocket_server.RobloxAPI.get_user_id_from_username', return_value=7), patch(
+            'features.websocket_server.RobloxAPI.get_player_presence', return_value=None,
+        ):
+            result = self.server._execute('JoinUser demo target')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(self.manager.launch_roblox.call_args.kwargs['follow_user_id'], '7')
+
     def test_rejoin_reads_current_launcher_settings(self):
         worker = auto_rejoin.AutoRejoinWorker('demo', {}, self.manager, self.status)
         self.manager.launch_roblox.return_value = False

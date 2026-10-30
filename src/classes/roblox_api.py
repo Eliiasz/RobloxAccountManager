@@ -361,7 +361,12 @@ class RobloxAPI:
         
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=5)
-            
+            # Roblox answers 403 with a fresh token when the one sent expired.
+            fresh_token = response.headers.get('x-csrf-token') if response.status_code == 403 else None
+            if fresh_token and fresh_token != csrf_token:
+                headers['X-CSRF-TOKEN'] = fresh_token
+                response = requests.post(url, headers=headers, json=payload, timeout=5)
+
             if response.status_code == 200:
                 data = response.json()
                 if data.get('userPresences') and len(data['userPresences']) > 0:
@@ -382,7 +387,14 @@ class RobloxAPI:
                     
                     return result
             else:
-                print(f"[ERROR] Presence API returned status {response.status_code}")
+                reason = ""
+                try:
+                    errors = response.json().get('errors') or []
+                    reason = str(errors[0].get('message', '')) if errors else ""
+                except Exception:
+                    pass
+                print(f"[ERROR] Presence API returned status {response.status_code}"
+                      + (f": {reason}" if reason else ""))
         except Exception as e:
             print(f"[ERROR] Failed to get player presence: {e}")
         

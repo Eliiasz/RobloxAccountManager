@@ -404,7 +404,9 @@ class ParallelLaunchTests(unittest.TestCase):
             gate.wait()  # only passes if all three are running at the same time
             return OperationResult.success()
 
-        success, failures, _ = actions._run_launch_batch(["a", "b", "c"], launch_one, 0, "test")
+        # Not affected by a real Roblox update waiting on this PC.
+        with patch.object(actions, "_roblox_update_first", return_value=False):
+            success, failures, _ = actions._run_launch_batch(["a", "b", "c"], launch_one, 0, "test", first_alone=False)
         self.assertEqual(success, 3)
         self.assertEqual(failures, [])
         self.assertTrue(all(parallel for _, parallel in started))

@@ -1313,7 +1313,26 @@ class RobloxAccountManager:
                 self.accounts[username]['cookie_valid'] = True
                 self.accounts[username].pop('valid', None)
                 self.save_accounts()
+            self._notify_cookie_status(username, "valid")
+        elif not launched and getattr(launched, 'code', '') == 'COOKIE_INVALID':
+            # Confirm with the normal cookie check before marking the account:
+            # a refused ticket alone can also be a temporary Roblox problem.
+            from features import cookie_validator
+
+            self._notify_cookie_status(username, cookie_validator.recheck(self, username))
         return launched
+
+    # Set by the UI: called as (username, status) when a launch shows that an
+    # account's cookie works or no longer works.
+    on_cookie_status = None
+
+    def _notify_cookie_status(self, username, status):
+        callback = self.on_cookie_status
+        if callback is not None:
+            try:
+                callback(username, status)
+            except Exception as exc:
+                print(f"[WARNING] Cookie status update failed: {exc}")
 
     def set_account_note(self, username, note):
         """Set or update note for an account"""

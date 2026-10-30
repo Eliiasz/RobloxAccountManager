@@ -47,11 +47,43 @@ class JoinUserTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(launched, ["alice", "bob"])
 
+    def test_a_failed_presence_check_still_joins(self):
+        # Roblox answered 403 for every account: let Roblox find the server.
+        manager, launched, result = self.run_join(None)
+        self.assertTrue(result)
+        self.assertEqual(launched, ["alice", "bob"])
+        self.assertEqual(manager.launch_roblox.call_args.kwargs["follow_user_id"], "4242")
+
     def test_an_offline_user_launches_nothing(self):
         manager, launched, result = self.run_join({"in_game": False, "status": 0})
         self.assertFalse(result)
         self.assertEqual(result.code, "TARGET_NOT_IN_GAME")
         manager.launch_roblox.assert_not_called()
+
+
+class PresenceRequestTests(unittest.TestCase):
+    def response(self, status, body=None, token=None):
+        r = Mock(status_code=status, headers={"x-csrf-token": token} if token else {})
+        r.json.return_value = body or {}
+        return r
+
+    def test_an_expired_token_is_replaced_once(self):
+        ok = self.response(200, {"userPresences": [{"userId": 7, "userPresenceType": 2, "placeId": 1}]})
+        with patch.object(actions.RobloxAPI, "get_csrf_token", return_value="old"), \
+                patch("classes.roblox_api.requests.post",
+                      side_effect=[self.response(403, token="new"), ok]) as post:
+            presence = actions.RobloxAPI.get_player_presence(7, "TEST")
+        self.assertTrue(presence["in_game"])
+        self.assertEqual(post.call_args.kwargs["headers"]["X-CSRF-TOKEN"], "new")
+
+    def test_a_refusal_is_logged_with_robloxs_reason(self):
+        refused = self.response(403, {"errors": [{"code": 0, "message": "Challenge is required"}]})
+        with patch.object(actions.RobloxAPI, "get_csrf_token", return_value="tok"), \
+                patch("classes.roblox_api.requests.post", return_value=refused) as post, \
+                patch("builtins.print") as log:
+            self.assertIsNone(actions.RobloxAPI.get_player_presence(7, "TEST"))
+        self.assertEqual(post.call_count, 1)
+        self.assertIn("403: Challenge is required", log.call_args.args[0])
 
 
 if __name__ == "__main__":
