@@ -75,7 +75,9 @@ exe = EXE(
     strip=False,
     upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    # Unpack into the app's own folder, not Temp, so every leftover there is
+    # ours and temp_cleanup can remove it (see src/features/temp_cleanup.py).
+    runtime_tmpdir=r"%LOCALAPPDATA%\ANaneRAM\runtime",
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

@@ -1,11 +1,16 @@
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import psutil
 
 from features import window_log_probe as probe
 
@@ -40,7 +45,6 @@ class ProbeProtocolTests(unittest.TestCase):
         self.assertEqual(probe._read_result(self.result, self.key).status, "error")
 
     def test_helper_rechecks_pid_after_scan(self):
-        import psutil
         old = MagicMock()
         old.create_time.return_value = 100.0
         old.name.return_value = "RobloxPlayerBeta.exe"
@@ -51,7 +55,6 @@ class ProbeProtocolTests(unittest.TestCase):
             self.assertEqual(probe._scan(123, 100.0)["status"], "process_changed")
 
     def test_wrong_process_is_not_scanned(self):
-        import psutil
         process = MagicMock()
         process.create_time.return_value = 100.0
         process.name.return_value = "other.exe"
@@ -59,32 +62,81 @@ class ProbeProtocolTests(unittest.TestCase):
             self.assertEqual(probe._scan(123, 100.0)["status"], "process_changed")
         process.open_files.assert_not_called()
 
-    def test_windowed_helper_uses_result_file_without_stdout(self):
-        with patch.object(probe, "_scan", return_value={"status": "process_changed"}), \
-             patch("sys.stdout", None):
-            self.assertEqual(probe.helper_main(["123", "100.0", self.result]), 0)
-        self.assertEqual(json.loads(Path(self.result).read_text())["status"], "process_changed")
-
-    def test_helper_arguments_cannot_start_ui_on_error(self):
-        self.assertEqual(probe.helper_main([]), 2)
-        self.assertEqual(probe.helper_main(["123", "nan", self.result]), 2)
-
     def test_frozen_command_reuses_executable(self):
         with patch.object(probe.sys, "frozen", True, create=True):
-            command = probe._helper_command(self.key, self.result)
-        self.assertEqual(command[:2], [probe.sys.executable, probe.HELPER_OPTION])
-        self.assertEqual(command[2:], ["123", "100.0", self.result])
+            command = probe._helper_command(self.directory)
+        self.assertEqual(command[:3], [probe.sys.executable, probe.HELPER_OPTION, self.directory])
+        self.assertEqual(command[3], str(os.getpid()))
 
 
-class ProbeLifetimeTests(unittest.TestCase):
-    def test_timeout_kills_and_reaps_helper(self):
-        child = MagicMock()
-        child.poll.return_value = None
-        with patch.object(probe.subprocess, "Popen", return_value=child):
-            result = probe.probe_open_log_paths((123, 100.0), threading.Event(), timeout=0)
-        self.assertEqual(result.status, "timeout")
-        child.kill.assert_called_once()
-        child.wait.assert_called_once_with(timeout=1)
+class HelperLoopTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        me = psutil.Process()
+        self.args = [str(self.folder), str(me.pid), repr(me.create_time())]
+
+    def run_helper(self, args=None):
+        codes = []
+        worker = threading.Thread(target=lambda: codes.append(probe.helper_main(args or self.args)))
+        worker.start()
+        return worker, codes
+
+    def test_serves_requests_without_stdout_until_asked_to_stop(self):
+        probe._write_json(self.folder / "req-1.json", {"pid": 123, "create_time": 100.0})
+        with patch.object(probe, "_scan", return_value={"status": "process_changed"}), \
+                patch("sys.stdout", None):
+            worker, codes = self.run_helper()
+            deadline = time.monotonic() + 5
+            while not (self.folder / "res-1.json").exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            (self.folder / "stop").write_bytes(b"")
+            worker.join(5)
+        self.assertEqual(codes, [0])
+        self.assertTrue((self.folder / "ready").exists())
+        self.assertFalse((self.folder / "req-1.json").exists())
+        self.assertEqual(json.loads((self.folder / "res-1.json").read_text())["status"], "process_changed")
+
+    def test_helper_ends_when_the_app_is_gone(self):
+        args = [str(self.folder), self.args[1], "1.0"]  # same PID, different start time
+        worker, codes = self.run_helper(args)
+        worker.join(5)
+        self.assertEqual(codes, [0])
+
+    def test_bad_arguments_cannot_start_ui(self):
+        self.assertEqual(probe.helper_main([]), 2)
+        self.assertEqual(probe.helper_main([str(self.folder), "123", "nan"]), 2)
+        self.assertEqual(probe.helper_main([str(self.folder / "missing"), "123", "1.0"]), 2)
+
+
+def sleeper_command(folder):
+    # Starts like the helper, then hangs the way a stuck native scan does.
+    return [sys.executable, "-c",
+            "import pathlib, sys, time; pathlib.Path(sys.argv[1], 'ready').write_text('1'); time.sleep(60)",
+            folder]
+
+
+class HelperLifetimeTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = probe._Helper()
+        self.addCleanup(self.helper.close)
+
+    def test_one_helper_serves_every_scan_and_closes_with_the_app(self):
+        key = (os.getpid(), psutil.Process().create_time())  # not Roblox: process_changed
+        first = self.helper.probe(key, threading.Event(), timeout=10)
+        process = self.helper._process
+        second = self.helper.probe(key, threading.Event(), timeout=10)
+        self.assertEqual((first.status, second.status), ("process_changed", "process_changed"))
+        self.assertIs(self.helper._process, process)
+        folder = self.helper._folder
+        self.helper.close()
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(folder.exists())
+
+    def test_a_hung_helper_is_stopped_and_replaced(self):
+        with patch.object(probe, "_helper_command", side_effect=sleeper_command):
+            result = self.helper.probe((123, 100.0), threading.Event(), timeout=0.2)
+            self.assertEqual(result.status, "timeout")
+            self.assertIsNone(self.helper._process)
 
     def test_cancelled_scan_does_not_start_a_process(self):
         stop = threading.Event()
@@ -94,15 +146,36 @@ class ProbeLifetimeTests(unittest.TestCase):
         self.assertEqual(result.status, "cancelled")
         start.assert_not_called()
 
-    def test_running_helper_is_cancelled_and_reaped(self):
+    def test_a_cancelled_scan_keeps_the_helper(self):
         stop = threading.Event()
-        child = MagicMock()
-        def started(*args, **kwargs):
-            stop.set()
-            return child
-        child.poll.return_value = None
-        with patch.object(probe.subprocess, "Popen", side_effect=started):
-            result = probe.probe_open_log_paths((123, 100.0), stop)
+        with patch.object(probe, "_helper_command", side_effect=sleeper_command):
+            threading.Timer(0.3, stop.set).start()
+            result = self.helper.probe((123, 100.0), stop, timeout=10)
         self.assertEqual(result.status, "cancelled")
+        self.assertIsNone(self.helper._process.poll())
+
+
+class EndProcessTests(unittest.TestCase):
+    def test_the_unpacked_app_is_ended_so_the_starter_can_clean_up(self):
+        starter = MagicMock(pid=1)
+        starter.poll.return_value = None
+        child = MagicMock()
+        with patch.object(psutil, "Process") as process:
+            process.return_value.children.return_value = [child]
+            probe._end_process(starter)
         child.kill.assert_called_once()
-        child.wait.assert_called_once_with(timeout=1)
+        starter.kill.assert_not_called()  # the starter deletes its Temp folder and exits
+        starter.wait.assert_called_once_with(timeout=probe.STOP_TIMEOUT_SECONDS)
+
+    def test_a_starter_that_does_not_exit_is_killed(self):
+        starter = MagicMock(pid=1)
+        starter.poll.return_value = None
+        starter.wait.side_effect = [subprocess.TimeoutExpired("x", 5), 0]
+        with patch.object(psutil, "Process") as process:
+            process.return_value.children.return_value = [MagicMock()]
+            probe._end_process(starter)
+        starter.kill.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

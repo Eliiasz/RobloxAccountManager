@@ -1,7 +1,9 @@
 import os
 import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from features import temp_cleanup
 
@@ -60,6 +62,49 @@ class TempCleanupTests(unittest.TestCase):
         half = self.make("_MEI1006-removing")
         temp_cleanup.clean(self.temp, own="")
         self.assertFalse(os.path.exists(half))
+
+    def make_partial(self, name, age=3600):
+        path = os.path.join(self.temp, name)
+        for library in temp_cleanup.PARTIAL_MARKERS:
+            os.makedirs(os.path.join(path, library))
+        old = time.time() - age
+        os.utime(path, (old, old))
+        return path
+
+    def test_a_copy_stopped_while_unpacking_is_removed(self):
+        partial = self.make_partial("_MEI1007")
+        removed, _ = temp_cleanup.clean(self.temp, own="")
+        self.assertEqual(removed, 1)
+        self.assertFalse(os.path.exists(partial))
+
+    def test_a_copy_still_unpacking_is_kept(self):
+        partial = self.make_partial("_MEI1008", age=5)
+        temp_cleanup.clean(self.temp, own="")
+        self.assertTrue(os.path.isdir(partial))
+
+    def test_in_the_apps_own_folder_every_old_folder_is_removed(self):
+        bare = self.make("_MEI1009", ours=False)
+        removed, _ = temp_cleanup.clean(self.temp, own="", all_ours=True)
+        self.assertEqual(removed, 1)
+        self.assertFalse(os.path.exists(bare))
+
+    def test_cleanup_repeats_while_the_app_runs(self):
+        stop = threading.Event()
+        calls = []
+
+        def fake_clean():
+            calls.append(1)
+            if len(calls) == 3:
+                stop.set()
+            if len(calls) == 2:
+                raise OSError("busy")  # one failed round does not end the loop
+
+        with patch.object(temp_cleanup, "clean_all", side_effect=fake_clean):
+            worker = threading.Thread(target=temp_cleanup.run_repeatedly, args=(stop, 0.01))
+            worker.start()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(calls), 3)
 
     def test_source_runs_do_nothing(self):
         temp_cleanup.start_in_background()  # not frozen: returns without a thread
